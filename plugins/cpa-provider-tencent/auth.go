@@ -22,6 +22,10 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 	// A codebuddy record may carry its own PAT-less marker only; its token lives
 	// in the plugin's OAuth document or an API key.
 	storage := storageFor(kind)
+	// The host re-serialises auth metadata back into the auth file, so the
+	// user-managed fields in the original document (excluded-models visibility,
+	// notes, aliases, ...) must ride through on Metadata — dropping them would
+	// silently erase those settings on the next re-synthesis.
 	return pluginkit.AuthParseResponse{
 		Handled: true,
 		Auth: pluginkit.AuthData{
@@ -30,6 +34,7 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 			FileName:    req.FileName,
 			Label:       kind.displayName,
 			StorageJSON: storage,
+			Metadata:    extraDocumentFields(req.RawJSON),
 			Attributes:  map[string]string{"kind": kind.id, "region": kind.region},
 		},
 	}, nil
