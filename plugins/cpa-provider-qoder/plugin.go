@@ -177,7 +177,7 @@ func (g *gateway) ResetQuota(context.Context, pluginkit.QuotaResetRequest) (plug
 func (g *gateway) StaticModels(context.Context, pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
 	return pluginkit.ModelResponse{
 		Provider: providerKey,
-		Models:   staticFallback(regionFor(g.impl.cfg.region)),
+		Models:   mustStaticRoutes(regionFor(g.impl.cfg.region)),
 	}, nil
 }
 
@@ -192,7 +192,7 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 		g.impl.recordError(errModels)
 		return pluginkit.ModelResponse{
 			Provider: providerKey,
-			Models:   staticFallback(regionFor(firstNonEmpty(req.Attributes["region"], g.impl.cfg.region))),
+			Models:   mustStaticRoutes(regionFor(firstNonEmpty(req.Attributes["region"], g.impl.cfg.region))),
 		}, nil
 	}
 	return pluginkit.ModelResponse{Provider: providerKey, Models: models}, nil
@@ -202,7 +202,7 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 func (g *gateway) RegisterModels(context.Context, pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
 	return pluginkit.ModelRegistrationResponse{
 		Provider: providerKey,
-		Models:   staticFallback(regionFor(g.impl.cfg.region)),
+		Models:   mustStaticRoutes(regionFor(g.impl.cfg.region)),
 	}, nil
 }
 

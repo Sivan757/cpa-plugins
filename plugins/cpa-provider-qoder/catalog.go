@@ -148,26 +148,34 @@ func readCatalog(ctx context.Context, creds *credentials, identity cosyIdentity)
 //
 // Only rows that are enabled and carry a usable key become models: an entry the
 // upstream would refuse to route must not appear in a picker.
-func buildModels(reg *region, entries []catalogEntry) []pluginkit.ModelInfo {
+func buildModels(reg *region, entries []catalogEntry) ([]pluginkit.ModelInfo, map[string]string) {
 	out := make([]pluginkit.ModelInfo, 0, len(entries))
+	routes := make(map[string]string, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for index := range entries {
 		entry := &entries[index]
-		id := strings.TrimSpace(entry.Key)
-		if id == "" || !entry.Enable {
+		key := strings.TrimSpace(entry.Key)
+		if key == "" || !entry.Enable {
 			continue
 		}
+		displayName := firstNonEmpty(entry.DisplayName, key)
+		// The model id is the human-readable display name: that is what both
+		// the OpenAI /v1/models listing and the management picker show as the
+		// title. The upstream routing key travels alongside it so the executor
+		// can still address the gateway correctly.
+		id := displayName
 		if _, duplicate := seen[id]; duplicate {
 			continue
 		}
 		seen[id] = struct{}{}
-		out = append(out, modelFromEntry(reg, entry, id))
+		routes[id] = key
+		out = append(out, modelFromEntry(reg, entry, id, key))
 	}
-	return out
+	return out, routes
 }
 
-func modelFromEntry(reg *region, entry *catalogEntry, id string) pluginkit.ModelInfo {
-	displayName := firstNonEmpty(entry.DisplayName, id)
+func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) pluginkit.ModelInfo {
+	displayName := id
 	contextLength := effectiveContextWindow(entry)
 
 	info := pluginkit.ModelInfo{
@@ -175,7 +183,7 @@ func modelFromEntry(reg *region, entry *catalogEntry, id string) pluginkit.Model
 		Object:              "model",
 		OwnedBy:             reg.displayName,
 		DisplayName:         displayName,
-		Name:                id,
+		Name:                routeKey,
 		Description:         describeModel(entry, displayName),
 		InputTokenLimit:     firstPositive(entry.MaxInputTokens, contextLength),
 		OutputTokenLimit:    firstPositive(entry.MaxOutputTokens, defaultOutputFallback),

@@ -21,7 +21,8 @@ const (
 // final assistant message as one chat completion.
 func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
-	body, model, errPrepare := prepareChatBody(req, identity)
+	routeKey := g.impl.routeKey(req.Model)
+	body, model, errPrepare := prepareChatBody(req, identity, routeKey)
 	if errPrepare != nil {
 		return pluginkit.ExecutorResponse{}, errPrepare
 	}
@@ -46,7 +47,8 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 // client's stream twice.
 func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
-	body, model, errPrepare := prepareChatBody(req, identity)
+	routeKey := g.impl.routeKey(req.Model)
+	body, model, errPrepare := prepareChatBody(req, identity, routeKey)
 	if errPrepare != nil {
 		return pluginkit.ExecutorStreamResponse{}, errPrepare
 	}
@@ -119,7 +121,7 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 //
 // The body also carries the attribution fields the official client sends: they
 // are optional for billing but required for the vendor's statistics views.
-func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity) ([]byte, string, error) {
+func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, routeKey string) ([]byte, string, error) {
 	raw := req.Payload
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = req.OriginalRequest
@@ -141,8 +143,10 @@ func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity) ([]by
 	if model == "" {
 		return nil, "", pluginkit.BadRequestError("the chat request does not name a model")
 	}
-	// Routing reads the X-Model-Key header, so the body and the header must agree.
-	document["model"] = model
+	// Routing reads the X-Model-Key header, so the body and the header must
+	// agree. The advertised id is the display name; the gateway needs the
+	// catalog's routing key.
+	document["model"] = routeKey
 	document["stream"] = true
 	document["stream_options"] = map[string]any{"include_usage": true}
 
