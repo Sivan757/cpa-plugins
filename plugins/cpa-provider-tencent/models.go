@@ -9,34 +9,64 @@ import (
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
 )
 
-// catalogCache keeps one short-lived catalog snapshot so a model list request
-// immediately followed by a chat request does not hit /v3/config twice.
+// catalogCache keeps one short-lived snapshot per credential kind so a model
+// list request immediately followed by a chat request does not hit /v3/config
+// twice.
+//
+// The snapshot is keyed by kind: every family publishes its own catalog, and a
+// single shared entry let whichever kind loaded first answer for all of them.
 type catalogCache struct {
-	mu       sync.Mutex
+	mu      sync.Mutex
+	entries map[string]catalogEntry
+	ttl     time.Duration
+}
+
+// catalogEntry is one kind's cached roster and the time it was read.
+type catalogEntry struct {
 	models   []pluginkit.ModelInfo
 	loadedAt time.Time
-	ttl      time.Duration
 }
 
-func (c *catalogCache) get() ([]pluginkit.ModelInfo, bool) {
+func (c *catalogCache) get(kindID string) ([]pluginkit.ModelInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.models) == 0 || time.Since(c.loadedAt) > c.ttl {
+	entry, ok := c.entries[kindID]
+	if !ok || len(entry.models) == 0 || time.Since(entry.loadedAt) > c.ttl {
 		return nil, false
 	}
-	return c.models, true
+	return entry.models, true
 }
 
-func (c *catalogCache) put(models []pluginkit.ModelInfo) {
+func (c *catalogCache) put(kindID string, models []pluginkit.ModelInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.models = models
-	c.loadedAt = time.Now()
+	if c.entries == nil {
+		c.entries = make(map[string]catalogEntry, 4)
+	}
+	c.entries[kindID] = catalogEntry{models: models, loadedAt: time.Now()}
+}
+
+// count reports every cached roster, used by the status route.
+func (c *catalogCache) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	total := 0
+	for _, entry := range c.entries {
+		total += len(entry.models)
+	}
+	return total
+}
+
+// countFor reports one kind's cached roster size.
+func (c *catalogCache) countFor(kindID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries[kindID].models)
 }
 
 // modelsForAuth discovers the live model roster for one credential.
 func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, creds *credentials) ([]pluginkit.ModelInfo, error) {
-	if cached, ok := p.cache.get(); ok {
+	if cached, ok := p.cache.get(kind.id); ok {
 		return cached, nil
 	}
 	appVersion := p.appVersion(kind)
@@ -48,7 +78,7 @@ func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, c
 	if len(models) == 0 {
 		return nil, pluginkit.NewError("upstream_error", "the model catalog contained no usable models", 502)
 	}
-	p.cache.put(models)
+	p.cache.put(kind.id, models)
 	return models, nil
 }
 
@@ -75,15 +105,19 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 
 	out := make([]pluginkit.ModelInfo, 0, len(order))
 	seen := make(map[string]struct{}, len(order))
-	for _, id := range order {
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		row, ok := byID[id]
+	for _, upstreamID := range order {
+		row, ok := byID[upstreamID]
 		if !ok || row.Disabled {
 			continue
 		}
 		if row.MaxInputTokens <= 0 || row.MaxOutputTokens <= 0 {
+			continue
+		}
+		// The same model ships under different identifiers per gateway; the
+		// advertised id is the canonical one so a client can call it by a
+		// single name whichever credential serves it.
+		id := advertisedModelID(upstreamID)
+		if _, dup := seen[id]; dup {
 			continue
 		}
 		seen[id] = struct{}{}
@@ -183,6 +217,35 @@ func decorateDescription(row modelRow, doc *catalogDocument, now time.Time) stri
 	return joined + " · " + description
 }
 
+// modelAliases maps a canonical advertised id to the identifier the upstream
+// gateway expects. DeepSeek Flash is sold as deepseek-v4.1-flash on this
+// gateway while the rest of the fleet calls it deepseek-flash; advertising the
+// canonical name keeps one model from appearing twice in a picker.
+var modelAliases = map[string]string{
+	"deepseek-flash": "deepseek-v4.1-flash",
+}
+
+// advertisedModelID returns the canonical id a catalog row is advertised under.
+func advertisedModelID(upstreamID string) string {
+	trimmed := strings.TrimSpace(upstreamID)
+	for advertised, upstream := range modelAliases {
+		if strings.EqualFold(upstream, trimmed) {
+			return advertised
+		}
+	}
+	return strings.ToLower(trimmed)
+}
+
+// upstreamModelID resolves an advertised id back to the identifier the gateway
+// routes on. Unknown ids pass through so an explicit request still reaches the
+// upstream and surfaces its own error.
+func upstreamModelID(advertised string) string {
+	if upstream, ok := modelAliases[strings.ToLower(strings.TrimSpace(advertised))]; ok {
+		return upstream
+	}
+	return advertised
+}
+
 // cliRoster extracts the CLI-callable model identifiers from the catalog.
 func cliRoster(doc *catalogDocument) []string {
 	for _, agent := range doc.Agents {
@@ -200,14 +263,14 @@ func staticFallback(v *credentialKind) []pluginkit.ModelInfo {
 	var ids []string
 	if v.region == "cn" {
 		ids = []string{
-			"hy4-preview", "hy3", "hy3-x", "deepseek-v4.1-flash", "glm-5.3", "glm-5.3-flash",
+			"hy4-preview", "hy3", "hy3-x", "deepseek-flash", "glm-5.3", "glm-5.3-flash",
 			"glm-5.2", "glm-5.1", "glm-5v-turbo", "minimax-m3", "minimax-m2.7", "kimi-k3-1",
 			"kimi-k2.8-preview", "kimi-k2.7", "kimi-k2.6", "deepseek-v4-pro",
 		}
 	} else {
 		ids = []string{
 			"default-model", "fast-model", "balanced-model", "primary-model", "deep-model",
-			"hy4-preview-f", "hy3", "deepseek-v4.1-flash", "gpt-6-astra", "gpt-5.6-sol",
+			"hy4-preview-f", "hy3", "deepseek-flash", "gpt-6-astra", "gpt-5.6-sol",
 			"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex",
 			"gemini-3.5-flash", "glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.6",
 		}

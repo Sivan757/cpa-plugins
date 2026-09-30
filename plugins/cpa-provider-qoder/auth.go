@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
@@ -158,4 +159,25 @@ func extraDocumentFields(raw []byte) map[string]any {
 		return nil
 	}
 	return document
+}
+
+// fileExclusionsFor reads the excluded_models saved in this provider's auth
+// file in the auth-dir, so the live roster honors the user's visibility
+// choices even on paths where the host's attribute plumbing has not caught up.
+func fileExclusionsFor(provider string) []string {
+	if !strings.EqualFold(strings.TrimSpace(provider), providerKey) {
+		return nil
+	}
+	path := providerKey + ".json"
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		return nil
+	}
+	var doc struct {
+		ExcludedModels []string `json:"excluded_models"`
+	}
+	if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal != nil {
+		return nil
+	}
+	return doc.ExcludedModels
 }

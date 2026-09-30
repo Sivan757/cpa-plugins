@@ -84,7 +84,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 		defer C.free(unsafe.Pointer(cMethod))
 		var requestPtr *C.uint8_t
 		if len(request) > 0 {
-				requestPtr = (*C.uint8_t)(C.CBytes(request))
+			requestPtr = (*C.uint8_t)(C.CBytes(request))
 			defer C.free(unsafe.Pointer(requestPtr))
 		}
 		var response C.cliproxy_buffer

@@ -169,7 +169,9 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 		filtered := pluginkit.FilterModelsByExclusion(staticFallback(kind), req.Host.ExcludedModels[providerKey])
 		return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 	}
-	filtered := pluginkit.FilterModelsForRequest(models, req.Host, providerKey, req.Attributes)
+	excluded := pluginkit.ExcludedModelsFor(req.Host, providerKey)
+	excluded = append(excluded, mergedFileExclusions()...)
+	filtered := pluginkit.FilterModelsByExclusion(models, excluded)
 	return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 }
 
@@ -229,9 +231,7 @@ func (g *gateway) statusReport(ctx context.Context) map[string]any {
 			entry["enterpriseId"] = creds.EnterpriseID
 			entry["expiresAt"] = creds.ExpiresAt.Format(time.RFC3339)
 		}
-		if models, okCache := g.impl.cache.get(); okCache {
-			entry["cachedModels"] = len(models)
-		}
+		entry["cachedModels"] = g.impl.cache.countFor(kind.id)
 		entries = append(entries, entry)
 	}
 	report["credentials"] = entries

@@ -149,6 +149,14 @@ func (p *pluginState) prepareBody(kind *credentialKind, payload, original []byte
 
 	doc["stream"] = true
 
+	// A model advertised under a canonical id must reach the gateway under the
+	// identifier that gateway routes on.
+	if requested, ok := doc["model"].(string); ok {
+		if upstream := upstreamModelID(requested); upstream != requested {
+			doc["model"] = upstream
+		}
+	}
+
 	if value, ok := doc["tool_choice"]; ok {
 		resolved, keepTools := flattenToolChoice(value)
 		if resolved == "" {
