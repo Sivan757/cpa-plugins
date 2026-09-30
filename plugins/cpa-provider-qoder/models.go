@@ -92,12 +92,14 @@ func staticFallback(reg *region) ([]pluginkit.ModelInfo, map[string]string) {
 		id      string
 		context int64
 	}{
-		{"cmodel", 1_000_000},
-		{"auto", 180_000},
-		{"ultimate", 1_000_000},
-		{"performance", 1_000_000},
-		{"efficient", 180_000},
-		{"lite", 180_000},
+		{"qwen3.8-max", 1_000_000},
+		{"qwen3.7-plus", 200_000},
+		{"deepseek-v4-pro", 200_000},
+		{"deepseek-flash", 180_000},
+		{"glm-5.3", 200_000},
+		{"glm-5.2", 200_000},
+		{"kimi-k3", 260_000},
+		{"minimax-m2.7", 200_000},
 	}
 	out := make([]pluginkit.ModelInfo, 0, len(ids))
 	routes := make(map[string]string, len(ids))

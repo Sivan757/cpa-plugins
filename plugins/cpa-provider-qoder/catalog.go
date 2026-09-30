@@ -159,11 +159,16 @@ func buildModels(reg *region, entries []catalogEntry) ([]pluginkit.ModelInfo, ma
 			continue
 		}
 		displayName := firstNonEmpty(entry.DisplayName, key)
-		// The model id is the human-readable display name: that is what both
-		// the OpenAI /v1/models listing and the management picker show as the
-		// title. The upstream routing key travels alongside it so the executor
-		// can still address the gateway correctly.
-		id := displayName
+		// The model id is the human-readable display name, lowercased so ids
+		// stay uniform across vendors: that is what both the OpenAI /v1/models
+		// listing and the management picker show as the title.
+		id := strings.ToLower(displayName)
+		// Rows whose display name does not identify a vendor are internal
+		// routing slots (auto, tier names). They cannot be matched to a
+		// provider, so they are not advertised.
+		if !identifiableVendor(id) {
+			continue
+		}
 		if _, duplicate := seen[id]; duplicate {
 			continue
 		}
@@ -172,6 +177,21 @@ func buildModels(reg *region, entries []catalogEntry) ([]pluginkit.ModelInfo, ma
 		out = append(out, modelFromEntry(reg, entry, id, key))
 	}
 	return out, routes
+}
+
+// vendorPrefixes are the model-family prefixes this plugin can attribute to a
+// vendor. A display name outside these families is an internal routing slot
+// rather than a sellable model.
+var vendorPrefixes = []string{"qwen", "deepseek", "glm", "kimi", "minimax", "hy"}
+
+// identifiableVendor reports whether a model id names a vendor family.
+func identifiableVendor(id string) bool {
+	for _, prefix := range vendorPrefixes {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) pluginkit.ModelInfo {
@@ -306,14 +326,17 @@ func thinkingSupport(entry *catalogEntry) *pluginkit.ThinkingSupport {
 func describeModel(entry *catalogEntry, displayName string) string {
 	notes := make([]string, 0, 2)
 	if entry.IsFree || entry.IsFreeCamel || containsFold(entry.Tags, "limited_time_free") {
-		notes = append(notes, "free")
+		notes = append(notes, "倍率免费")
 	} else if entry.PriceFactor != nil && *entry.PriceFactor == 0 {
-		notes = append(notes, "free")
+		notes = append(notes, "倍率免费")
 	} else if entry.PriceFactor != nil {
-		notes = append(notes, fmt.Sprintf("x%g", *entry.PriceFactor))
+		notes = append(notes, fmt.Sprintf("倍率 x%g", *entry.PriceFactor))
+	}
+	if entry.IsVL {
+		notes = append(notes, "支持图片")
 	}
 	if len(notes) == 0 {
 		return displayName
 	}
-	return strings.Join(notes, " ") + " · " + displayName
+	return displayName + " · " + strings.Join(notes, " · ")
 }
