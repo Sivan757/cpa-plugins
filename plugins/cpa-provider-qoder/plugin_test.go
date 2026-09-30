@@ -105,7 +105,10 @@ func TestAuthParseClaimsOwnTypeAndDeclinesOthers(t *testing.T) {
 	}
 }
 
-func TestStaticModelsAreUsable(t *testing.T) {
+// The static path deliberately returns an empty roster: a static list carries
+// no credential, so per-account excluded models cannot be applied there and
+// would re-advertise models the user hid.
+func TestStaticModelsAreDeliberatelyEmpty(t *testing.T) {
 	result := call(t, pluginkit.MethodModelStatic, map[string]any{})
 	var resp pluginkit.ModelResponse
 	if errUnmarshal := json.Unmarshal(result, &resp); errUnmarshal != nil {
@@ -114,16 +117,10 @@ func TestStaticModelsAreUsable(t *testing.T) {
 	if resp.Provider != providerKey {
 		t.Fatalf("provider = %q, want %q", resp.Provider, providerKey)
 	}
-	if len(resp.Models) == 0 {
-		t.Fatal("the static roster must not be empty")
-	}
-	for _, model := range resp.Models {
-		if model.ID == "" {
-			t.Fatalf("model row without an id: %+v", model)
-		}
+	if len(resp.Models) != 0 {
+		t.Fatalf("the static roster must be empty (exclusions apply on for_auth), got %d models", len(resp.Models))
 	}
 }
-
 func TestManagementStatusIsSelfDescribing(t *testing.T) {
 	// The route is registered under the plugin id, matching the library name.
 	result := call(t, pluginkit.MethodManagementHandle, pluginkit.ManagementRequest{

@@ -61,9 +61,11 @@ func (c *catalogCache) ttlSeconds() float64 {
 }
 
 // modelsForAuth discovers the live roster for one credential.
-func (p *pluginState) modelsForAuth(ctx context.Context, storageJSON []byte) ([]pluginkit.ModelInfo, error) {
+func (p *pluginState) modelsForAuth(ctx context.Context, req pluginkit.AuthModelRequest, storageJSON []byte) ([]pluginkit.ModelInfo, error) {
+	excluded := pluginkit.ExcludedModelsFor(req.Host, providerKey)
+	excluded = append(excluded, pluginkit.RequestExcludedModels(req.Attributes)...)
 	if cached, _, okCache := p.cache.get(); okCache {
-		return cached, nil
+		return pluginkit.FilterModelsByExclusion(cached, excluded), nil
 	}
 	creds, errCreds := p.resolveCredentials(ctx, storageJSON)
 	if errCreds != nil {
@@ -78,7 +80,7 @@ func (p *pluginState) modelsForAuth(ctx context.Context, storageJSON []byte) ([]
 		return nil, pluginkit.NewError("upstream_error", "the Qoder catalog contained no enabled models", 502)
 	}
 	p.cache.put(models, routes)
-	return models, nil
+	return pluginkit.FilterModelsForRequest(models, req.Host, providerKey, req.Attributes), nil
 }
 
 // staticFallback is the last-resort roster used when the catalog is unreachable.

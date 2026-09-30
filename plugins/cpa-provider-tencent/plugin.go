@@ -150,8 +150,10 @@ func (g *gateway) ResetQuota(context.Context, pluginkit.QuotaResetRequest) (plug
 // StaticModels implements pluginkit.ModelProvider. Registration runs once for
 // the provider, so it returns the union roster from the CN gateway's static
 // fallback rather than a per-credential list.
-func (g *gateway) StaticModels(context.Context, pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
-	return pluginkit.ModelResponse{Provider: providerKey, Models: staticFallback(kinds["workbuddy"])}, nil
+func (g *gateway) StaticModels(ctx context.Context, req pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
+	kind := kinds["workbuddy"]
+	filtered := pluginkit.FilterModelsForRequest(staticFallback(kind), req.Host, providerKey, nil)
+	return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 }
 
 // ModelsForAuth implements pluginkit.ModelProvider. The host calls this once per
@@ -164,14 +166,17 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 	}
 	models, errModels := g.impl.modelsForKind(ctx, kind, creds)
 	if errModels != nil {
-		return pluginkit.ModelResponse{Provider: providerKey, Models: staticFallback(kind)}, nil
+		filtered := pluginkit.FilterModelsByExclusion(staticFallback(kind), req.Host.ExcludedModels[providerKey])
+		return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 	}
-	return pluginkit.ModelResponse{Provider: providerKey, Models: models}, nil
+	filtered := pluginkit.FilterModelsForRequest(models, req.Host, providerKey, req.Attributes)
+	return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 }
 
 // RegisterModels implements pluginkit.ModelProvider.
 func (g *gateway) RegisterModels(context.Context, pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
-	return pluginkit.ModelRegistrationResponse{Provider: providerKey, Models: staticFallback(kinds["workbuddy"])}, nil
+	kind := kinds["workbuddy"]
+	return pluginkit.ModelRegistrationResponse{Provider: providerKey, Models: pluginkit.FilterModelsByExclusion(staticFallback(kind), nil)}, nil
 }
 
 // ---- Executor ----

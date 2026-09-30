@@ -173,12 +173,13 @@ func (g *gateway) ResetQuota(context.Context, pluginkit.QuotaResetRequest) (plug
 
 // ---- ModelProvider ----
 
-// StaticModels implements pluginkit.ModelProvider.
+// StaticModels implements pluginkit.ModelProvider. It deliberately returns an
+// empty roster: the static path has no credential, so the per-account excluded
+// models cannot be applied there and a static roster would re-advertise models
+// the user hid. Registration happens through model.for_auth instead, which
+// carries the credential and therefore the exclusions.
 func (g *gateway) StaticModels(context.Context, pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
-	return pluginkit.ModelResponse{
-		Provider: providerKey,
-		Models:   mustStaticRoutes(regionFor(g.impl.cfg.region)),
-	}, nil
+	return pluginkit.ModelResponse{Provider: providerKey}, nil
 }
 
 // ModelsForAuth implements pluginkit.ModelProvider.
@@ -187,7 +188,7 @@ func (g *gateway) StaticModels(context.Context, pluginkit.StaticModelRequest) (p
 // list would remove the provider from the picker entirely, which is worse than a
 // conservative list.
 func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequest) (pluginkit.ModelResponse, error) {
-	models, errModels := g.impl.modelsForAuth(ctx, req.StorageJSON)
+	models, errModels := g.impl.modelsForAuth(ctx, req, req.StorageJSON)
 	if errModels != nil {
 		g.impl.recordError(errModels)
 		return pluginkit.ModelResponse{
@@ -198,12 +199,12 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 	return pluginkit.ModelResponse{Provider: providerKey, Models: models}, nil
 }
 
-// RegisterModels implements pluginkit.ModelProvider.
+// RegisterModels implements pluginkit.ModelProvider. Returning nothing here is
+// deliberate: ModelProvider already registers the live roster through
+// model.static and model.for_auth, and this legacy path re-adds every model it
+// is given without applying exclusions.
 func (g *gateway) RegisterModels(context.Context, pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
-	return pluginkit.ModelRegistrationResponse{
-		Provider: providerKey,
-		Models:   mustStaticRoutes(regionFor(g.impl.cfg.region)),
-	}, nil
+	return pluginkit.ModelRegistrationResponse{Provider: providerKey}, nil
 }
 
 // ---- Executor ----
