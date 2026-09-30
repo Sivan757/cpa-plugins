@@ -75,9 +75,30 @@ var reasoningEffortRank = map[string]int{"low": 0, "medium": 1, "high": 2, "xhig
 const (
 	// defaultContextFallback is used when a row declares no usable input budget.
 	defaultContextFallback = int64(180_000)
-	// defaultOutputFallback matches the reference client's output cap.
+	// defaultOutputFallback is the cap for a model the vendor publishes no
+	// per-model output limit for; it matches the reference client's own cap.
 	defaultOutputFallback = int64(32_768)
 )
+
+// modelOutputLimits carries the vendor's published maximum output length per
+// upstream routing key. The model catalog never publishes this field, so the
+// values come from the model vendor's own specification pages.
+var modelOutputLimits = map[string]int64{
+	"qmodel_38max": 131_072,
+	"qfmodel":      131_072,
+	"dmodel":       131_072,
+	"dfmodel":      393_216,
+	"gfmodel":      131_072,
+}
+
+// outputLimitFor resolves a row's output cap: the vendor's published value when
+// one exists, otherwise the reference client's fallback.
+func outputLimitFor(entry *catalogEntry) int64 {
+	if limit, okLimit := modelOutputLimits[strings.ToLower(strings.TrimSpace(entry.Key))]; okLimit {
+		return limit
+	}
+	return firstPositive(entry.MaxOutputTokens, defaultOutputFallback)
+}
 
 // parseCatalogDocument extracts the model rows from a catalog payload and
 // reports which scene they came from. The scene name is diagnostic only.
@@ -207,10 +228,10 @@ func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) plugi
 		DisplayName:         describeModel(entry, id),
 		Name:                routeKey,
 		Description:         describeModel(entry, id),
-		InputTokenLimit:     firstPositive(entry.MaxInputTokens, contextLength),
-		OutputTokenLimit:    firstPositive(entry.MaxOutputTokens, defaultOutputFallback),
+		InputTokenLimit:     contextLength,
+		OutputTokenLimit:    outputLimitFor(entry),
 		ContextLength:       contextLength,
-		MaxCompletionTokens: firstPositive(entry.MaxOutputTokens, defaultOutputFallback),
+		MaxCompletionTokens: outputLimitFor(entry),
 		UserDefined:         false,
 	}
 	if entry.IsVL {
@@ -226,25 +247,39 @@ func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) plugi
 	return info
 }
 
-// effectiveContextWindow prefers the single default context tier, because the
-// upstream sizes the request from that tier rather than from max_input_tokens.
+// effectiveContextWindow is the largest context tier the model accepts.
+//
+// The upstream also publishes a default tier, but that is only the value the
+// client starts on: the model itself accepts every advertised tier, and a host
+// that budgets from the default would under-report a 1M-token model as 200K.
 func effectiveContextWindow(entry *catalogEntry) int64 {
-	if tier, okTier := defaultContextTier(entry.ContextConfig); okTier {
-		return tier
+	if largest, okLargest := largestContextTier(entry.ContextConfig); okLargest {
+		return largest
 	}
 	return firstPositive(entry.MaxInputTokens, defaultContextFallback)
 }
 
+// largestContextTier returns the biggest advertised context tier.
+func largestContextTier(config map[string]catalogContextTier) (int64, bool) {
+	var largest int64
+	for _, tier := range config {
+		if tier.TokenCount == nil {
+			continue
+		}
+		if value := *tier.TokenCount; value > largest {
+			largest = value
+		}
+	}
+	return largest, largest > 0
+}
+
+// defaultContextTier reports the tier the upstream starts a session on. The
+// advertised window is the largest tier instead, so this is only used to
+// report the upstream's own default.
 func defaultContextTier(config map[string]catalogContextTier) (int64, bool) {
 	var chosen int64
 	count := 0
-	keys := make([]string, 0, len(config))
-	for key := range config {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		tier := config[key]
+	for _, tier := range config {
 		if tier.TokenCount == nil || *tier.TokenCount <= 0 {
 			continue
 		}

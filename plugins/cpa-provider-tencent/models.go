@@ -126,9 +126,19 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 		if displayName == "" {
 			displayName = id
 		}
+		// Advertise the largest window the gateway accepts. contextWindow
+		// carries a default tier as well, but that is only where a client
+		// starts: using it would report a 1M-token model as 300K.
 		contextLength := row.MaxInputTokens
-		if v.region == "global" && row.ContextWindow != nil && row.ContextWindow.DefaultLength > 0 {
-			contextLength = row.ContextWindow.DefaultLength
+		if window := row.ContextWindow; window != nil {
+			for _, supported := range window.SupportedLengths {
+				if supported > contextLength {
+					contextLength = supported
+				}
+			}
+			if window.DefaultLength > contextLength {
+				contextLength = window.DefaultLength
+			}
 		}
 
 		info := pluginkit.ModelInfo{

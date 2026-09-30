@@ -2,11 +2,19 @@ package main
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
 )
+
+// modelLimits is the request budget a model advertises: the context window the
+// gateway should size the request for, and the maximum output it may produce.
+type modelLimits struct {
+	Window int64
+	Output int64
+}
 
 // catalogCache keeps one short-lived catalog snapshot so the model-list request
 // the host makes before a chat does not hit the upstream twice.
@@ -144,4 +152,38 @@ func (p *pluginState) routeKey(id string) string {
 		}
 	}
 	return id
+}
+
+// limitsFor reports the context window and output cap advertised for a model.
+//
+// The executor needs both: the gateway sizes a request from
+// parameters.context_length, and a model advertised as accepting 1M tokens must
+// actually ask for that tier rather than inherit the gateway's own default.
+func (p *pluginState) limitsFor(id string) modelLimits {
+	var window, output int64
+	if _, routes, okCache := p.cache.get(); okCache {
+		if key, okKey := routes[id]; okKey && key != "" {
+			id = key
+		}
+	}
+	if limit, okLimit := modelOutputLimits[strings.ToLower(strings.TrimSpace(id))]; okLimit {
+		output = limit
+	}
+	models, _, okModels := p.cache.get()
+	if !okModels {
+		return modelLimits{Output: output}
+	}
+	for _, model := range models {
+		if model.Name != id && !strings.EqualFold(model.ID, id) {
+			continue
+		}
+		if model.ContextLength > 0 {
+			window = model.ContextLength
+		}
+		if output == 0 {
+			output = model.MaxCompletionTokens
+		}
+		return modelLimits{Window: window, Output: output}
+	}
+	return modelLimits{Window: window, Output: output}
 }

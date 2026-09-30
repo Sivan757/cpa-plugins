@@ -1,0 +1,67 @@
+{
+ "assistant": [
+  {
+   "key": "qmodel_38max",
+   "enable": true,
+   "display_name": "Qwen3.8-Max",
+   "max_input_tokens": 180000,
+   "is_vl": true,
+   "is_reasoning": true,
+   "price_factor": 0.5,
+   "context_config": {
+    "1M": {
+     "token_count": 1000000
+    },
+    "200K": {
+     "token_count": 200000,
+     "is_default": true
+    },
+    "400K": {
+     "token_count": 400000
+    }
+   }
+  },
+  {
+   "key": "qfmodel",
+   "enable": true,
+   "display_name": "Qwen3.8-Flash",
+   "max_input_tokens": 180000,
+   "is_vl": true,
+   "is_reasoning": true,
+   "price_factor": 0.1,
+   "context_config": {
+    "1M": {
+     "token_count": 1000000
+    },
+    "200K": {
+     "token_count": 200000,
+     "is_default": true
+    },
+    "400K": {
+     "token_count": 400000
+    }
+   }
+  },
+  {
+   "key": "dfmodel",
+   "enable": true,
+   "display_name": "DeepSeek-Flash",
+   "max_input_tokens": 180000,
+   "is_vl": true,
+   "is_reasoning": true,
+   "price_factor": 0.1,
+   "context_config": {
+    "1M": {
+     "token_count": 1000000
+    },
+    "200K": {
+     "token_count": 200000,
+     "is_default": true
+    },
+    "400K": {
+     "token_count": 400000
+    }
+   }
+  }
+ ]
+}

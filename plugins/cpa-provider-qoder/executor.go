@@ -22,7 +22,7 @@ const (
 func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
 	routeKey := g.impl.routeKey(req.Model)
-	body, model, errPrepare := prepareChatBody(req, identity, routeKey)
+	body, model, errPrepare := prepareChatBody(req, identity, routeKey, g.impl.limitsFor(req.Model))
 	if errPrepare != nil {
 		return pluginkit.ExecutorResponse{}, errPrepare
 	}
@@ -48,7 +48,7 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
 	routeKey := g.impl.routeKey(req.Model)
-	body, model, errPrepare := prepareChatBody(req, identity, routeKey)
+	body, model, errPrepare := prepareChatBody(req, identity, routeKey, g.impl.limitsFor(req.Model))
 	if errPrepare != nil {
 		return pluginkit.ExecutorStreamResponse{}, errPrepare
 	}
@@ -121,7 +121,7 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 //
 // The body also carries the attribution fields the official client sends: they
 // are optional for billing but required for the vendor's statistics views.
-func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, routeKey string) ([]byte, string, error) {
+func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, routeKey string, limits modelLimits) ([]byte, string, error) {
 	raw := req.Payload
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = req.OriginalRequest
@@ -149,6 +149,28 @@ func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, route
 	document["model"] = routeKey
 	document["stream"] = true
 	document["stream_options"] = map[string]any{"include_usage": true}
+
+	// The gateway sizes a request from parameters.context_length, so a model
+	// advertised as 1M must actually ask for the 1M tier; otherwise the
+	// upstream silently serves its own default. max_tokens is capped at the
+	// vendor's published output limit for the same reason.
+	if window, limit := limits.Window, limits.Output; window > 0 || limit > 0 {
+		parameters, _ := document["parameters"].(map[string]any)
+		if parameters == nil {
+			parameters = map[string]any{}
+		}
+		if window > 0 {
+			parameters["context_length"] = window
+		}
+		if limit > 0 {
+			if requested, okRequested := numericValue(document["max_tokens"]); okRequested && requested < limit {
+				parameters["max_tokens"] = requested
+			} else {
+				parameters["max_tokens"] = limit
+			}
+		}
+		document["parameters"] = parameters
+	}
 
 	// Attribution. chat_record_id mirrors request_id in the official client.
 	document["request_id"] = identity.RequestID
@@ -355,4 +377,24 @@ func mergeToolCalls(fragments []json.RawMessage) []any {
 		})
 	}
 	return out
+}
+
+// numericValue reads a JSON number that may decode as float64 or json.Number.
+func numericValue(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case int:
+		return int64(typed), true
+	case json.Number:
+		parsed, errParse := typed.Int64()
+		if errParse != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
 }
