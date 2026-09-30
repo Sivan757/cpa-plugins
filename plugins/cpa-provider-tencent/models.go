@@ -122,7 +122,11 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 		if thinking := thinkingSupport(row); thinking != nil {
 			info.Thinking = thinking
 		}
-		info.Description = decorateDescription(row, doc, now)
+		// The picker-facing endpoints preserve display_name but drop
+		// description, so the multiplier rides on the display name while the
+		// id stays lowercase and clean for API callers.
+		info.DisplayName = decorateDescription(row, doc, now)
+		info.Description = info.DisplayName
 		out = append(out, info)
 	}
 	return out

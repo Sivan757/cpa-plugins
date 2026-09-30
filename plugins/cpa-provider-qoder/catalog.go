@@ -195,16 +195,18 @@ func identifiableVendor(id string) bool {
 }
 
 func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) pluginkit.ModelInfo {
-	displayName := id
 	contextLength := effectiveContextWindow(entry)
 
 	info := pluginkit.ModelInfo{
-		ID:                  id,
-		Object:              "model",
-		OwnedBy:             reg.displayName,
-		DisplayName:         displayName,
+		ID:      id,
+		Object:  "model",
+		OwnedBy: reg.displayName,
+		// The multiplier travels on the display name because the picker-facing
+		// endpoints preserve display_name but drop description; keeping the id
+		// itself clean leaves API callers unaffected.
+		DisplayName:         describeModel(entry, id),
 		Name:                routeKey,
-		Description:         describeModel(entry, displayName),
+		Description:         describeModel(entry, id),
 		InputTokenLimit:     firstPositive(entry.MaxInputTokens, contextLength),
 		OutputTokenLimit:    firstPositive(entry.MaxOutputTokens, defaultOutputFallback),
 		ContextLength:       contextLength,
