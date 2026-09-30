@@ -38,6 +38,12 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 	if errStorage != nil {
 		return pluginkit.AuthParseResponse{}, pluginkit.NewError("internal_error", errStorage.Error())
 	}
+	// The host re-serialises auth metadata back into the auth file, so every
+	// user-managed field in the original document (excluded-models visibility,
+	// notes, aliases, ...) must ride through on Metadata. Dropping them would
+	// silently erase the user's model visibility choices on the next
+	// re-synthesis.
+	metadata := extraDocumentFields(req.RawJSON)
 	return pluginkit.AuthParseResponse{
 		Handled: true,
 		Auth: pluginkit.AuthData{
@@ -46,6 +52,7 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 			FileName:    req.FileName,
 			Label:       resolved.Region.displayName,
 			StorageJSON: storage,
+			Metadata:    metadata,
 			Attributes: map[string]string{
 				"region": resolved.Region.id,
 				"source": string(resolved.Source),
@@ -135,4 +142,20 @@ func (g *gateway) RefreshAuth(ctx context.Context, req pluginkit.AuthRefreshRequ
 		},
 		NextRefreshAfter: bearer.ExpiresAt,
 	}, nil
+}
+
+// extraDocumentFields returns the auth document's fields beyond the ones this
+// plugin owns, so user-managed settings survive the host's metadata round trip.
+func extraDocumentFields(raw []byte) map[string]any {
+	var document map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &document); errUnmarshal != nil {
+		return nil
+	}
+	for _, owned := range []string{"type", "pat", "personal_token", "region", "area"} {
+		delete(document, owned)
+	}
+	if len(document) == 0 {
+		return nil
+	}
+	return document
 }
