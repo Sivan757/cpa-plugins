@@ -279,15 +279,17 @@ const (
 	MethodManagementRegister = "management.register"
 	MethodManagementHandle   = "management.handle"
 
-	MethodHostHTTPDo       = "host.http.do"
-	MethodHostHTTPDoStream = "host.http.do_stream"
-	MethodHostLog          = "host.log"
-	MethodHostAuthList     = "host.auth.list"
-	MethodHostAuthGet      = "host.auth.get"
-	MethodHostAuthSave     = "host.auth.save"
-	MethodHostStreamEmit   = "host.stream.emit"
-	MethodHostStreamClose  = "host.stream.close"
-	MethodHostModelExecute = "host.model.execute"
+	MethodHostHTTPDo          = "host.http.do"
+	MethodHostHTTPDoStream    = "host.http.do_stream"
+	MethodHostHTTPStreamRead  = "host.http.stream_read"
+	MethodHostHTTPStreamClose = "host.http.stream_close"
+	MethodHostLog             = "host.log"
+	MethodHostAuthList        = "host.auth.list"
+	MethodHostAuthGet         = "host.auth.get"
+	MethodHostAuthSave        = "host.auth.save"
+	MethodHostStreamEmit      = "host.stream.emit"
+	MethodHostStreamClose     = "host.stream.close"
+	MethodHostModelExecute    = "host.model.execute"
 )
 
 // rawMessage keeps the marshalling helpers below honest about intent.

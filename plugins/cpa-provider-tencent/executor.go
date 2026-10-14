@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
 )
@@ -37,8 +38,24 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 	}, nil
 }
 
-// ExecuteStream performs a streaming chat completion, re-emitting the upstream
-// SSE as the bare JSON chunks the host frames.
+// ExecuteStream performs a streaming chat completion, forwarding the upstream
+// SSE to the client as each event arrives.
+//
+// Two things must both hold, and they pull in opposite directions:
+//
+//   - Errors that decide routing — a rejected credential, a rejected parameter —
+//     are only knowable from the response head, and must be returned from this
+//     call so the host can rotate credentials and apply its request-scoped
+//     error rules. So the upstream connection is opened synchronously, and any
+//     non-2xx head is classified before returning.
+//   - Once the upstream is streaming a 2xx body, the events must reach the
+//     client as they arrive. Buffering here would collapse the upstream's
+//     timing into a single burst, which is exactly the defect this replaces.
+//
+// The two are reconciled by opening synchronously (so failures still classify)
+// and forwarding on a goroutine via the host stream (so timing survives). The
+// host holds the callbacks open until the stream closes, so returning early is
+// safe.
 func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
 	kind, creds, errCreds := g.impl.resolveFor(ctx, req)
 	if errCreds != nil {
@@ -48,17 +65,47 @@ func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorReque
 	if errPrepare != nil {
 		return pluginkit.ExecutorStreamResponse{}, errPrepare
 	}
-	result, errCall := g.impl.callChat(ctx, kind, creds, nil, body)
-	if errCall != nil {
-		return pluginkit.ExecutorStreamResponse{}, errCall
+
+	streamID := strings.TrimSpace(req.StreamID)
+	// Without a host stream there is nowhere to emit progressively, so fall back
+	// to the buffered reply rather than dropping output.
+	if streamID == "" || !pluginkit.HostAvailable() {
+		result, errCall := g.impl.callChat(ctx, kind, creds, nil, body)
+		if errCall != nil {
+			return pluginkit.ExecutorStreamResponse{}, errCall
+		}
+		return pluginkit.ExecutorStreamResponse{
+			Headers: streamHeaders(),
+			Chunks:  splitSSE(result.Body),
+		}, nil
 	}
-	return pluginkit.ExecutorStreamResponse{
-		Headers: http.Header{
-			"Content-Type":  []string{"text/event-stream"},
-			"Cache-Control": []string{"no-cache"},
-		},
-		Chunks: splitSSE(result.Body),
-	}, nil
+
+	// Opening here rather than in the goroutine is what keeps a rejected head
+	// visible to the host's credential rotation and scoped-error rules.
+	stream, errOpen := g.impl.openChatStream(ctx, pluginkit.NewHostCallback(req.HostCallbackID), kind, creds, nil, body)
+	if errOpen != nil {
+		return pluginkit.ExecutorStreamResponse{}, errOpen
+	}
+
+	callback := pluginkit.NewHostCallback(req.HostCallbackID)
+	go func() {
+		defer stream.Close()
+		if errForward := forwardStream(callback, streamID, stream); errForward != nil {
+			callback.CloseStream(streamID, errForward.Error())
+			return
+		}
+		callback.CloseStream(streamID, "")
+	}()
+
+	return pluginkit.ExecutorStreamResponse{Headers: streamHeaders()}, nil
+}
+
+// streamHeaders is the header set every streamed reply carries.
+func streamHeaders() http.Header {
+	return http.Header{
+		"Content-Type":  []string{"text/event-stream"},
+		"Cache-Control": []string{"no-cache"},
+	}
 }
 
 // CountTokens is not offered by the upstream; the host falls back to its own

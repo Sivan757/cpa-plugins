@@ -82,6 +82,23 @@ func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, c
 	return models, nil
 }
 
+// rosterForKind is the roster a kind can actually call, falling back to the
+// static placeholder list only when the catalog is unreachable.
+//
+// The gateway routes with the live catalog, so advertising anything else would
+// list models that fail selection with auth_not_found.
+func (p *pluginState) rosterForKind(ctx context.Context, kind *credentialKind) []pluginkit.ModelInfo {
+	creds, errCreds := p.resolve(ctx, kind)
+	if errCreds != nil {
+		return staticFallback(kind)
+	}
+	models, errModels := p.modelsForKind(ctx, kind, creds)
+	if errModels != nil || len(models) == 0 {
+		return staticFallback(kind)
+	}
+	return models
+}
+
 // buildModels converts a catalog document into host model metadata.
 //
 // The roster the plugin advertises is the intersection of the models the
@@ -301,6 +318,43 @@ func staticFallback(v *credentialKind) []pluginkit.ModelInfo {
 			SupportedOutputModalities: []string{"text"},
 			Description:               "静态兜底清单：" + v.displayName + " 目录不可达",
 		})
+	}
+	return out
+}
+
+// visibleRoster is the provider-level roster the gateway advertises.
+//
+// Registration runs once for the whole plugin, so a model belongs here exactly
+// when at least one kind can still serve it: the union of each kind's roster
+// after dropping the models that kind excludes. Filtering by the union of the
+// exclusion lists instead would hide models a single kind still serves.
+//
+// roster supplies one kind's models. Callers pass the live catalog whenever
+// they can reach it, because the static fallback is only a "never go empty"
+// device: it lists ids an account may not be able to call, so advertising it
+// unchecked is what made the endpoint promise unroutable models.
+//
+// A kind with no auth file keeps its roster untouched, so a credential that has
+// not been created yet cannot blank out the roster.
+func visibleRoster(byKind map[string][][]string, roster func(*credentialKind) []pluginkit.ModelInfo) []pluginkit.ModelInfo {
+	seen := map[string]bool{}
+	out := make([]pluginkit.ModelInfo, 0, 32)
+	for _, kind := range kinds {
+		sets := byKind[kind.id]
+		if len(sets) == 0 {
+			sets = [][]string{nil}
+		}
+		for _, excluded := range sets {
+			visible := pluginkit.FilterModelsByExclusion(roster(kind), excluded)
+			for _, model := range visible {
+				id := strings.ToLower(strings.TrimSpace(model.ID))
+				if id == "" || seen[id] {
+					continue
+				}
+				seen[id] = true
+				out = append(out, model)
+			}
+		}
 	}
 	return out
 }

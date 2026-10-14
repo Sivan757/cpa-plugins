@@ -64,29 +64,51 @@ func extraDocumentFields(raw []byte) map[string]any {
 	return document
 }
 
-// mergedFileExclusions unions the excluded_models lists saved in every kind's
-// auth file, so the credential-less static path still honors the user's
-// visibility choices.
-func mergedFileExclusions() []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, 8)
-	for _, kind := range kinds {
-		raw, errRead := os.ReadFile(filepath.Join(desktopAuthDir(), kind.authFilename))
-		if errRead != nil {
+// authFileExclusions groups the excluded_models lists of this plugin's gateway
+// auth files by credential kind. The outer slice holds one entry per auth file.
+//
+// Grouping by kind is load-bearing. The gateway advertises a single roster for
+// the whole plugin, so a model may only disappear when no kind still serves it.
+// Merging the lists across kinds would instead drop glm-5.3-flash, which the
+// international file excludes while the CN file serves it.
+//
+// The previous implementation read the desktop products' credential files
+// (workbuddy-desktop*.info), which carry no excluded_models at all, so it
+// always returned nothing and the static roster ignored every exclusion.
+func authFileExclusions(authDir string) map[string][][]string {
+	byKind := map[string][][]string{}
+	dir := strings.TrimSpace(authDir)
+	if dir == "" {
+		return byKind
+	}
+	entries, errRead := os.ReadDir(dir)
+	if errRead != nil {
+		return byKind
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		raw, errFile := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if errFile != nil {
 			continue
 		}
 		var doc struct {
+			Type           string   `json:"type"`
+			Kind           string   `json:"kind"`
 			ExcludedModels []string `json:"excluded_models"`
 		}
 		if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal != nil {
 			continue
 		}
-		for _, id := range doc.ExcludedModels {
-			if trimmed := strings.TrimSpace(id); trimmed != "" && !seen[trimmed] {
-				seen[trimmed] = true
-				out = append(out, trimmed)
-			}
+		if !strings.EqualFold(strings.TrimSpace(doc.Type), providerKey) {
+			continue
 		}
+		kindID := strings.TrimSpace(doc.Kind)
+		if kindID == "" {
+			continue
+		}
+		byKind[kindID] = append(byKind[kindID], doc.ExcludedModels)
 	}
-	return out
+	return byKind
 }

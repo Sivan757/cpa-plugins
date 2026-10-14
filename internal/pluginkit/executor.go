@@ -9,6 +9,12 @@ import (
 
 // ExecutorRequest mirrors pluginapi.ExecutorRequest (no JSON tags on the host
 // struct, so the wire keys are the exported Go field names).
+//
+// StreamID and HostCallbackID are the host's rpcExecutorRequest envelope: the
+// host sets both on executor.execute_stream and they are empty everywhere else.
+// An executor that streams asynchronously — returning before it has finished
+// emitting — uses StreamID with StreamEmit/StreamClose, and HostCallbackID to
+// make nested host calls for the same request.
 type ExecutorRequest struct {
 	AuthID          string
 	AuthProvider    string
@@ -25,6 +31,12 @@ type ExecutorRequest struct {
 	StorageJSON     []byte
 	AuthMetadata    map[string]any
 	AuthAttributes  map[string]string
+	// StreamID identifies this request's host stream, for async streaming. The
+	// host's envelope tags it snake_case while every embedded field keeps its Go
+	// name, so only these two carry explicit tags.
+	StreamID string `json:"stream_id,omitempty"`
+	// HostCallbackID scopes host callbacks to this request's executor call.
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 // ExecutorResponse mirrors pluginapi.ExecutorResponse.

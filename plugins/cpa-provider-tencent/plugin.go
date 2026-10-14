@@ -148,16 +148,22 @@ func (g *gateway) ResetQuota(context.Context, pluginkit.QuotaResetRequest) (plug
 // ---- ModelProvider ----
 
 // StaticModels implements pluginkit.ModelProvider. Registration runs once for
-// the provider, so it returns the union roster from the CN gateway's static
-// fallback rather than a per-credential list.
+// the provider, so it advertises every kind's live roster minus the models that
+// kind excludes: a model stays listed while any credential can still serve it.
 func (g *gateway) StaticModels(ctx context.Context, req pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
-	kind := kinds["workbuddy"]
-	filtered := pluginkit.FilterModelsForRequest(staticFallback(kind), req.Host, providerKey, nil)
-	return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
+	models := visibleRoster(authFileExclusions(req.Host.AuthDir), func(kind *credentialKind) []pluginkit.ModelInfo {
+		return g.impl.rosterForKind(ctx, kind)
+	})
+	excluded := pluginkit.ExcludedModelsFor(req.Host, providerKey)
+	return pluginkit.ModelResponse{Provider: providerKey, Models: pluginkit.FilterModelsByExclusion(models, excluded)}, nil
 }
 
 // ModelsForAuth implements pluginkit.ModelProvider. The host calls this once per
 // auth record, so each credential reports the roster it can actually drive.
+//
+// Per-credential exclusions are deliberately not applied here: the gateway
+// already drops them from this credential's routing candidates, and re-applying
+// them locally could only make the two lists disagree.
 func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequest) (pluginkit.ModelResponse, error) {
 	kind := kindForRecord(req.StorageJSON, req.Attributes)
 	creds, errCreds := g.impl.resolve(ctx, kind)
@@ -169,16 +175,18 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequ
 		filtered := pluginkit.FilterModelsByExclusion(staticFallback(kind), req.Host.ExcludedModels[providerKey])
 		return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 	}
-	excluded := pluginkit.ExcludedModelsFor(req.Host, providerKey)
-	excluded = append(excluded, mergedFileExclusions()...)
-	filtered := pluginkit.FilterModelsByExclusion(models, excluded)
+	filtered := pluginkit.FilterModelsByExclusion(models, pluginkit.ExcludedModelsFor(req.Host, providerKey))
 	return pluginkit.ModelResponse{Provider: providerKey, Models: filtered}, nil
 }
 
-// RegisterModels implements pluginkit.ModelProvider.
-func (g *gateway) RegisterModels(context.Context, pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
-	kind := kinds["workbuddy"]
-	return pluginkit.ModelRegistrationResponse{Provider: providerKey, Models: pluginkit.FilterModelsByExclusion(staticFallback(kind), nil)}, nil
+// RegisterModels implements pluginkit.ModelProvider. The host only calls this
+// when a plugin exposes no ModelProvider, so it has no host summary and cannot
+// read per-credential exclusions; it still reports the live rosters.
+func (g *gateway) RegisterModels(ctx context.Context, _ pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
+	models := visibleRoster(nil, func(kind *credentialKind) []pluginkit.ModelInfo {
+		return g.impl.rosterForKind(ctx, kind)
+	})
+	return pluginkit.ModelRegistrationResponse{Provider: providerKey, Models: models}, nil
 }
 
 // ---- Executor ----
