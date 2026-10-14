@@ -120,6 +120,12 @@ type pluginState struct {
 
 	// materialized guards the one-shot auth-record creation.
 	materialized bool
+
+	// baseURL overrides the free-tier upstream root, for testing against a
+	// local capture endpoint.
+	baseURL string
+	// goURL overrides the paid-tier upstream root.
+	goURL string
 }
 
 type cachedCatalog struct {
@@ -167,6 +173,16 @@ func newGateway() *gateway {
 					Type:        pluginkit.FieldString,
 					Description: "OpenCode CLI version used for the upstream user agent. Discovered from npm when unset.",
 				},
+				{
+					Name:        "base_url",
+					Type:        pluginkit.FieldString,
+					Description: "Free-tier upstream root (default https://opencode.ai/zen/v1).",
+				},
+				{
+					Name:        "go_base_url",
+					Type:        pluginkit.FieldString,
+					Description: "Paid-tier upstream root (default https://opencode.ai/zen/go/v1).",
+				},
 			},
 		},
 		ProviderKey:   providerKey,
@@ -193,6 +209,12 @@ func (g *gateway) configure(cfg *pluginkit.Config) error {
 	}
 	if version := strings.TrimSpace(cfg.String("user_agent_version", "")); version != "" {
 		g.impl.version = version
+	}
+	if base := strings.TrimSpace(cfg.String("base_url", "")); base != "" {
+		g.impl.baseURL = strings.TrimSuffix(base, "/")
+	}
+	if base := strings.TrimSpace(cfg.String("go_base_url", "")); base != "" {
+		g.impl.goURL = strings.TrimSuffix(base, "/")
 	}
 	g.impl.materializeTiers()
 	return nil
@@ -276,6 +298,22 @@ func (p *pluginState) materializeTiers() {
 			pluginkit.HostLog(ctx, "warn", "opencode: could not save a Go auth record: "+errSave.Error())
 		}
 	}
+}
+
+// freeRoot resolves the free-tier upstream root.
+func (p *pluginState) freeRoot() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return freeBaseURL
+}
+
+// goRoot resolves the paid-tier upstream root.
+func (p *pluginState) goRoot() string {
+	if p.goURL != "" {
+		return p.goURL
+	}
+	return goBaseURL
 }
 
 // splitKeys turns a comma-separated key list into its members.
@@ -426,10 +464,10 @@ func (p *pluginState) catalog(ctx context.Context, tier string) []pluginkit.Mode
 
 // fetchCatalog reads one tier's model list from its gateway.
 func (p *pluginState) fetchCatalog(ctx context.Context, tier, version string) []pluginkit.ModelInfo {
-	base := freeBaseURL
+	base := p.freeRoot()
 	key := ""
 	if tier == tierGo {
-		base = goBaseURL
+		base = p.goRoot()
 		if len(p.apiKeys) > 0 {
 			key = p.apiKeys[0]
 		}

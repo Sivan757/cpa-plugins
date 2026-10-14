@@ -136,9 +136,9 @@ func (p *pluginState) planFor(req pluginkit.ExecutorRequest) (*executionPlan, er
 		return nil, pluginkit.NewError("invalid_credential", "selected auth provider is not opencode", http.StatusUnauthorized)
 	}
 	tier := tierOf(req.AuthAttributes, req.StorageJSON)
-	plan := &executionPlan{tier: tier, model: req.Model, baseURL: freeBaseURL}
+	plan := &executionPlan{tier: tier, model: req.Model, baseURL: p.freeRoot()}
 	if tier == tierGo {
-		plan.baseURL = goBaseURL
+		plan.baseURL = p.goRoot()
 		plan.key = keyOf(req.AuthAttributes, req.StorageJSON)
 		if plan.key == "" && len(p.apiKeys) > 0 {
 			plan.key = p.apiKeys[0]
@@ -213,6 +213,7 @@ func (p *pluginState) prepareBody(req pluginkit.ExecutorRequest, plan *execution
 	if errMarshal != nil {
 		return nil, pluginkit.NewError("internal_error", "encode chat payload: "+errMarshal.Error(), http.StatusInternalServerError)
 	}
+	pluginkit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: outbound body=%s", pluginkit.TruncateBody(encoded, 600)))
 	return encoded, nil
 }
 
@@ -253,7 +254,11 @@ func (p *pluginState) openChatStream(ctx context.Context, plan *executionPlan, b
 // fingerprint the free tier gates on.
 func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Header {
 	session := p.sessions.id(seed)
-	headers := clientHeaders(p.version, session, p.sessions.requestID())
+	request := p.sessions.requestID()
+	headers := clientHeaders(p.version, session, request)
+	pluginkit.HostLog(context.Background(), "info", fmt.Sprintf(
+		"opencode: outbound tier=%s url=%s ua=%s session=%s request=%s",
+		plan.tier, plan.baseURL+"/chat/completions", "opencode/"+p.version, session, request))
 	if plan.tier == tierGo {
 		headers.Set("Authorization", "Bearer "+plan.key)
 	} else {
