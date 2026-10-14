@@ -191,3 +191,41 @@ func TestIdentifierRefusesAnUnimplementedCapability(t *testing.T) {
 		t.Fatalf("identifier = %v, want the provider key", result)
 	}
 }
+
+// TestStreamResponseIsMarshalable is the regression guard for a plugin result
+// that cannot cross the RPC boundary: the host encodes every executor result as
+// JSON, so a response carrying a channel fails at the host with "unsupported
+// type" rather than in any unit test that only builds the value.
+func TestStreamResponseIsMarshalable(t *testing.T) {
+	response := BufferedStream(StreamHeaders(), SplitSSE([]byte("data: {\"a\":1}\n\ndata: [DONE]\n\n")))
+	if len(response.Chunks) != 1 {
+		t.Fatalf("chunks = %d, want the one data frame", len(response.Chunks))
+	}
+	encoded, errMarshal := json.Marshal(response)
+	if errMarshal != nil {
+		t.Fatalf("stream response does not encode: %v", errMarshal)
+	}
+	if !strings.Contains(string(encoded), "text/event-stream") {
+		t.Fatalf("encoded stream response lost its headers: %s", encoded)
+	}
+	// A non-streaming result must encode too.
+	if _, errResponse := json.Marshal(ExecutorResponse{Payload: []byte("{}")}); errResponse != nil {
+		t.Fatalf("executor response does not encode: %v", errResponse)
+	}
+}
+
+// TestSplitSSEFramesBareJSON pins the framing contract with the host: chunks
+// carry the JSON payload alone, because the host adds its own SSE prefix and
+// terminator.
+func TestSplitSSEFramesBareJSON(t *testing.T) {
+	chunks := SplitSSE([]byte("data: {\"a\":1}\n\ndata: [DONE]\n\n"))
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %d, want 1", len(chunks))
+	}
+	if strings.HasPrefix(string(chunks[0]), "data:") {
+		t.Fatalf("chunk carries an SSE prefix: %q", chunks[0])
+	}
+	if strings.Contains(string(chunks[0]), "[DONE]") {
+		t.Fatal("the host appends the terminator itself")
+	}
+}

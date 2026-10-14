@@ -21,16 +21,25 @@ type ExecutorEnvelope struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+// ExecutorStreamResponse is the ABI shape of a streaming executor result: the
+// same fields the host's rpcExecutorStreamResponse decodes.
+//
+// It is a slice, not the SDK's channel-carrying type, because this value has to
+// survive JSON encoding at the RPC boundary. The host replays the buffer
+// downstream.
+type ExecutorStreamResponse struct {
+	Headers http.Header
+	Chunks  []ExecutorStreamChunk
+}
+
 // BufferedStream builds a streaming executor response from an already-collected
-// body. The v8 stream response carries a channel, so the chunks are replayed
-// from a goroutine that closes the channel when it finishes.
-func BufferedStream(headers http.Header, chunks [][]byte) pluginapi.ExecutorStreamResponse {
-	out := make(chan pluginapi.ExecutorStreamChunk, len(chunks))
+// body.
+func BufferedStream(headers http.Header, chunks [][]byte) ExecutorStreamResponse {
+	out := make([]ExecutorStreamChunk, 0, len(chunks))
 	for _, payload := range chunks {
-		out <- pluginapi.ExecutorStreamChunk{Payload: payload}
+		out = append(out, ExecutorStreamChunk{Payload: payload})
 	}
-	close(out)
-	return pluginapi.ExecutorStreamResponse{Headers: headers, Chunks: out}
+	return ExecutorStreamResponse{Headers: headers, Chunks: out}
 }
 
 // StreamHeaders is the header set a streamed reply carries.

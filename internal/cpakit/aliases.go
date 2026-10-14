@@ -135,8 +135,12 @@ type ExecutorResponse = pluginapi.ExecutorResponse
 // ExecutorStreamChunk is one buffered stream chunk.
 type ExecutorStreamChunk = pluginapi.ExecutorStreamChunk
 
-// ExecutorStreamResponse is a buffered streaming executor result.
-type ExecutorStreamResponse = pluginapi.ExecutorStreamResponse
+// ExecutorStreamResponse is deliberately NOT the SDK's own type.
+//
+// The SDK carries its chunks on a channel, which an in-process caller can drain,
+// but a plugin result is marshalled to JSON at the RPC boundary and a channel
+// has no JSON form. The host's rpcExecutorStreamResponse carries an array, so
+// that is the shape a plugin returns. See executor.go.
 
 // ExecutorHTTPRequest and ExecutorHTTPResponse back the raw bridging path.
 type (
