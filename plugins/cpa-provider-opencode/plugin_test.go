@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
@@ -111,5 +112,69 @@ func TestTierAndKeyResolution(t *testing.T) {
 	freeRecord := []byte(`{"type":"opencode"}`)
 	if tier := tierOf(nil, freeRecord); tier != tierFree {
 		t.Fatalf("absent tier marker resolved to %q, want free", tier)
+	}
+}
+
+// TestConversationSeedPrecedence pins the resolution order: the host canonical
+// identity wins, then an explicit inbound session header, then the opening
+// message digest.
+func TestConversationSeedPrecedence(t *testing.T) {
+	digestReq := pluginkit.ExecutorRequest{
+		Payload: []byte(`{"messages":[{"role":"user","content":"first question"},{"role":"user","content":"second"}]}`),
+	}
+	byContent := conversationSeed(digestReq)
+	if !strings.HasPrefix(byContent, "content:") {
+		t.Fatalf("seed without identity = %q, want a content digest", byContent)
+	}
+	if again := conversationSeed(digestReq); again != byContent {
+		t.Fatalf("content seed is not stable: %q then %q", byContent, again)
+	}
+	grown := pluginkit.ExecutorRequest{
+		Payload: []byte(`{"messages":[{"role":"user","content":"first question"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}]}`),
+	}
+	if conversationSeed(grown) != byContent {
+		t.Fatalf("seed changed as the history grew: %q then %q", byContent, conversationSeed(grown))
+	}
+	other := pluginkit.ExecutorRequest{Payload: []byte(`{"messages":[{"role":"user","content":"a different question"}]}`)}
+	if conversationSeed(other) == byContent {
+		t.Fatalf("two conversations share the seed %q", byContent)
+	}
+
+	withHeader := pluginkit.ExecutorRequest{
+		Headers: http.Header{"X-Session-Affinity": []string{"affinity-1"}},
+		Payload: digestReq.Payload,
+	}
+	if got := conversationSeed(withHeader); got != "header:affinity-1" {
+		t.Fatalf("header seed = %q, want header:affinity-1", got)
+	}
+
+	withCanonical := pluginkit.ExecutorRequest{
+		Metadata: map[string]any{"canonical_session_id": "canonical-1"},
+		Headers:  http.Header{"X-Session-Affinity": []string{"affinity-1"}},
+	}
+	if got := conversationSeed(withCanonical); got != "canonical:canonical-1" {
+		t.Fatalf("canonical seed = %q, want canonical:canonical-1", got)
+	}
+}
+
+// TestConversationSeedStaysFixedAcrossTurns is the cache-relevant property: every
+// turn of one conversation must resolve to the same stored session identifier,
+// while a different conversation must not.
+func TestConversationSeedStaysFixedAcrossTurns(t *testing.T) {
+	store := newSessionStore()
+	first := store.id(conversationSeed(pluginkit.ExecutorRequest{
+		Headers: http.Header{"X-Session-Id": []string{"conversation-a"}},
+	}))
+	second := store.id(conversationSeed(pluginkit.ExecutorRequest{
+		Headers: http.Header{"X-Session-Id": []string{"conversation-a"}},
+	}))
+	if first != second {
+		t.Fatalf("turn two used %q, turn one used %q", second, first)
+	}
+	other := store.id(conversationSeed(pluginkit.ExecutorRequest{
+		Headers: http.Header{"X-Session-Id": []string{"conversation-b"}},
+	}))
+	if other == first {
+		t.Fatalf("two conversations share the identifier %q", other)
 	}
 }

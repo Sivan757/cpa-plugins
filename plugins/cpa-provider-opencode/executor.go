@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,7 +27,7 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 	if errPrepare != nil {
 		return pluginkit.ExecutorResponse{}, errPrepare
 	}
-	result, errCall := g.impl.callChat(ctx, plan, body)
+	result, errCall := g.impl.callChat(ctx, req, plan, body)
 	if errCall != nil {
 		return pluginkit.ExecutorResponse{}, errCall
 	}
@@ -58,7 +60,7 @@ func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorReque
 
 	streamID := strings.TrimSpace(req.StreamID)
 	if streamID == "" || !pluginkit.HostAvailable() {
-		result, errCall := g.impl.callChat(ctx, plan, body)
+		result, errCall := g.impl.callChat(ctx, req, plan, body)
 		if errCall != nil {
 			return pluginkit.ExecutorStreamResponse{}, errCall
 		}
@@ -68,7 +70,7 @@ func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorReque
 		}, nil
 	}
 
-	stream, errOpen := g.impl.openChatStream(ctx, plan, body)
+	stream, errOpen := g.impl.openChatStream(ctx, req, plan, body)
 	if errOpen != nil {
 		return pluginkit.ExecutorStreamResponse{}, errOpen
 	}
@@ -120,6 +122,77 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 		Headers:    result.Header,
 		Body:       result.Body,
 	}, nil
+}
+
+// upstreamSessionHeaders are the inbound headers that identify one downstream
+// conversation. The first present value wins, in the order OpenCode's own
+// clients and the harnesses that drive them emit them.
+var upstreamSessionHeaders = []string{
+	"X-Session-Affinity",
+	"X-Opencode-Session",
+	"X-Session-Id",
+	"X-Claude-Code-Session-Id",
+	"Session-Id",
+}
+
+// conversationSeed resolves the identity that must stay constant for every turn
+// of one conversation.
+//
+// Zen routes its prompt cache by the session identifier and meters free-tier
+// usage per session, so a per-request value would defeat the cache and fragment
+// the meter. The precedence mirrors the reference provider: the host's canonical
+// session identity first, then an explicit inbound header, then a digest of the
+// conversation's opening user message, which keeps a client that sends no
+// session header stable across its turns.
+func conversationSeed(req pluginkit.ExecutorRequest) string {
+	if req.Metadata != nil {
+		if id, okID := req.Metadata["canonical_session_id"].(string); okID {
+			if trimmed := strings.TrimSpace(id); trimmed != "" {
+				return "canonical:" + trimmed
+			}
+		}
+	}
+	for _, name := range upstreamSessionHeaders {
+		if value := strings.TrimSpace(req.Headers.Get(name)); value != "" {
+			return "header:" + value
+		}
+	}
+	return "content:" + openingMessageDigest(req)
+}
+
+// openingMessageDigest hashes the first user message of the conversation, which
+// is the part of the payload that does not change as the history grows.
+func openingMessageDigest(req pluginkit.ExecutorRequest) string {
+	source := req.Payload
+	if len(source) == 0 {
+		source = req.OriginalRequest
+	}
+	var payload struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+		Input []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"input"`
+	}
+	if errUnmarshal := json.Unmarshal(source, &payload); errUnmarshal != nil {
+		return "unavailable"
+	}
+	for _, message := range payload.Messages {
+		if message.Role == "user" && len(message.Content) > 0 {
+			digest := sha256.Sum256(message.Content)
+			return hex.EncodeToString(digest[:16])
+		}
+	}
+	for _, item := range payload.Input {
+		if item.Role == "user" && len(item.Content) > 0 {
+			digest := sha256.Sum256(item.Content)
+			return hex.EncodeToString(digest[:16])
+		}
+	}
+	return "unavailable"
 }
 
 // executionPlan is everything one request needs after routing resolved.
@@ -218,8 +291,8 @@ func (p *pluginState) prepareBody(req pluginkit.ExecutorRequest, plan *execution
 }
 
 // callChat posts a prepared body and returns the buffered response.
-func (p *pluginState) callChat(ctx context.Context, plan *executionPlan, body []byte) (*pluginkit.HTTPResult, error) {
-	headers := p.requestHeaders(plan, "dsh")
+func (p *pluginState) callChat(ctx context.Context, req pluginkit.ExecutorRequest, plan *executionPlan, body []byte) (*pluginkit.HTTPResult, error) {
+	headers := p.requestHeaders(plan, conversationSeed(req))
 	result, errDo := pluginkit.HTTPDo(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
 	if errDo != nil {
 		return nil, pluginkit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
@@ -232,8 +305,8 @@ func (p *pluginState) callChat(ctx context.Context, plan *executionPlan, body []
 
 // openChatStream opens the upstream as a live reader. A non-2xx head is fully
 // known before any body byte, so it is read and classified here.
-func (p *pluginState) openChatStream(ctx context.Context, plan *executionPlan, body []byte) (*pluginkit.HTTPStream, error) {
-	headers := p.requestHeaders(plan, "dsh")
+func (p *pluginState) openChatStream(ctx context.Context, req pluginkit.ExecutorRequest, plan *executionPlan, body []byte) (*pluginkit.HTTPStream, error) {
+	headers := p.requestHeaders(plan, conversationSeed(req))
 	stream, errOpen := pluginkit.OpenHTTPStreamAmbient(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
 	if errOpen != nil {
 		return nil, pluginkit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
