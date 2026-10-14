@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // Route fragments are concatenated onto region.apiBase, which already ends in a
@@ -105,7 +105,7 @@ func outputLimitFor(entry *catalogEntry) int64 {
 func parseCatalogDocument(raw []byte) ([]catalogEntry, string, error) {
 	var scenes map[string]json.RawMessage
 	if errUnmarshal := json.Unmarshal(raw, &scenes); errUnmarshal != nil {
-		return nil, "", pluginkit.NewError("upstream_error", "Qoder catalog is not a JSON object: "+errUnmarshal.Error(), http.StatusBadGateway)
+		return nil, "", cpakit.NewError("upstream_error", "Qoder catalog is not a JSON object: "+errUnmarshal.Error(), http.StatusBadGateway)
 	}
 	for _, scene := range catalogScenePreference {
 		if entries, okEntries := decodeScene(scenes[scene]); okEntries {
@@ -127,7 +127,7 @@ func parseCatalogDocument(raw []byte) ([]catalogEntry, string, error) {
 			return entries, name, nil
 		}
 	}
-	return nil, "", pluginkit.NewError("upstream_error", "Qoder catalog carried no model scene", http.StatusBadGateway)
+	return nil, "", cpakit.NewError("upstream_error", "Qoder catalog carried no model scene", http.StatusBadGateway)
 }
 
 func decodeScene(raw json.RawMessage) ([]catalogEntry, bool) {
@@ -169,8 +169,8 @@ func readCatalog(ctx context.Context, creds *credentials, identity cosyIdentity)
 //
 // Only rows that are enabled and carry a usable key become models: an entry the
 // upstream would refuse to route must not appear in a picker.
-func buildModels(reg *region, entries []catalogEntry) ([]pluginkit.ModelInfo, map[string]string) {
-	out := make([]pluginkit.ModelInfo, 0, len(entries))
+func buildModels(reg *region, entries []catalogEntry) ([]cpakit.ModelInfo, map[string]string) {
+	out := make([]cpakit.ModelInfo, 0, len(entries))
 	routes := make(map[string]string, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for index := range entries {
@@ -215,10 +215,10 @@ func identifiableVendor(id string) bool {
 	return false
 }
 
-func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) pluginkit.ModelInfo {
+func modelFromEntry(reg *region, entry *catalogEntry, id, routeKey string) cpakit.ModelInfo {
 	contextLength := effectiveContextWindow(entry)
 
-	info := pluginkit.ModelInfo{
+	info := cpakit.ModelInfo{
 		ID:      id,
 		Object:  "model",
 		OwnedBy: reg.displayName,
@@ -325,7 +325,7 @@ func contextTierNames(config map[string]catalogContextTier) []string {
 //
 // A model that declares no effort list gets no controls: the plugin never
 // invents wire values the upstream has not confirmed.
-func thinkingSupport(entry *catalogEntry) *pluginkit.ThinkingSupport {
+func thinkingSupport(entry *catalogEntry) *cpakit.ThinkingSupport {
 	enabled := entry.ThinkingConfig
 	if enabled == nil || enabled.Enabled == nil || len(enabled.Enabled.Efforts) == 0 {
 		return nil
@@ -353,7 +353,7 @@ func thinkingSupport(entry *catalogEntry) *pluginkit.ThinkingSupport {
 		}
 		return levels[left] < levels[right]
 	})
-	return &pluginkit.ThinkingSupport{Levels: levels}
+	return &cpakit.ThinkingSupport{Levels: levels}
 }
 
 // describeModel folds the routing source and the price multiplier into the

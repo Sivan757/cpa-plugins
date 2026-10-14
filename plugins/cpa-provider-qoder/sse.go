@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // sseEnvelope is one outer frame of the upstream event stream.
@@ -64,7 +64,7 @@ func parseQoderStream(body []byte) ([]string, error) {
 		}
 		var envelope sseEnvelope
 		if errUnmarshal := json.Unmarshal([]byte(payload), &envelope); errUnmarshal != nil {
-			return nil, pluginkit.NewError("upstream_error",
+			return nil, cpakit.NewError("upstream_error",
 				"Qoder sent a malformed stream frame: "+truncateText([]byte(payload), 200), http.StatusBadGateway)
 		}
 		if strings.EqualFold(event, "error") {
@@ -129,7 +129,7 @@ func envelopeBody(envelope *sseEnvelope) (string, bool) {
 // detectInBandError recognises the upstream's failure frame: an HTTP 200
 // envelope whose model body is an error object with no choices and no usage.
 // Without this check the failure would be forwarded as an empty response.
-func detectInBandError(bodyText string) *pluginkit.PluginError {
+func detectInBandError(bodyText string) *cpakit.PluginError {
 	var probe innerProbe
 	if errUnmarshal := json.Unmarshal([]byte(bodyText), &probe); errUnmarshal != nil {
 		return nil
@@ -145,7 +145,7 @@ func detectInBandError(bodyText string) *pluginkit.PluginError {
 	if code != "" && strings.TrimSpace(probe.Message) != "" && !strings.Contains(detail, probe.Message) {
 		detail = code + ": " + strings.TrimSpace(probe.Message)
 	}
-	return pluginkit.NewError("upstream_error",
+	return cpakit.NewError("upstream_error",
 		"Qoder reported an error inside the stream: "+truncateText([]byte(detail), 300), http.StatusBadGateway)
 }
 
@@ -168,7 +168,7 @@ func scalarText(raw json.RawMessage) string {
 
 // statusError renders a non-200 envelope as a plugin error, extracting whatever
 // detail the upstream attached.
-func statusError(status int, envelope *sseEnvelope) *pluginkit.PluginError {
+func statusError(status int, envelope *sseEnvelope) *cpakit.PluginError {
 	detail := ""
 	if bodyText, okBody := envelopeBody(envelope); okBody {
 		detail = extractErrorDetail(bodyText)
@@ -180,11 +180,11 @@ func statusError(status int, envelope *sseEnvelope) *pluginkit.PluginError {
 	if detail != "" {
 		message += ": " + detail
 	}
-	return pluginkit.NewError("upstream_error", message, http.StatusBadGateway)
+	return cpakit.NewError("upstream_error", message, http.StatusBadGateway)
 }
 
 // frameError renders an event:error frame.
-func frameError(envelope *sseEnvelope, payload string) *pluginkit.PluginError {
+func frameError(envelope *sseEnvelope, payload string) *cpakit.PluginError {
 	detail := scalarText(envelope.Message)
 	if bodyText, okBody := envelopeBody(envelope); okBody {
 		detail = firstNonEmpty(extractErrorDetail(bodyText), detail)
@@ -192,7 +192,7 @@ func frameError(envelope *sseEnvelope, payload string) *pluginkit.PluginError {
 	if detail == "" {
 		detail = truncateText([]byte(payload), 300)
 	}
-	return pluginkit.NewError("upstream_error", "Qoder stream failed: "+detail, http.StatusBadGateway)
+	return cpakit.NewError("upstream_error", "Qoder stream failed: "+detail, http.StatusBadGateway)
 }
 
 // extractErrorDetail digs the human-readable message out of an error payload.

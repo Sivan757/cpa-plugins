@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // credentialDocument is the credential shape this plugin claims and accepts.
@@ -42,7 +42,7 @@ func parseCredentialDocument(raw []byte) (parsedCredential, error) {
 	}
 	var doc credentialDocument
 	if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal != nil {
-		return parsedCredential{}, pluginkit.BadRequestError("decode qoder credential: " + errUnmarshal.Error())
+		return parsedCredential{}, cpakit.BadRequestError("decode qoder credential: " + errUnmarshal.Error())
 	}
 	return parsedCredential{
 		PAT:      firstNonEmpty(doc.PAT, doc.PersonalToken),
@@ -112,7 +112,7 @@ func resolveCredential(storageJSON []byte, cfg *configState) (resolvedCredential
 		}
 	}
 	if pat == "" {
-		return resolvedCredential{}, pluginkit.NewError(
+		return resolvedCredential{}, cpakit.NewError(
 			"missing_credential",
 			"no Qoder personal access token: set pat or region in the plugin config, or write a qoder auth file, or export "+envPAT,
 			http.StatusUnauthorized,
@@ -249,13 +249,13 @@ func exchangeJobToken(ctx context.Context, pat string, reg *region) (jobToken, e
 	var exchanged jobTokenExchangeResponse
 	result, errCall := openAPIJSON(ctx, reg, http.MethodPost, "/api/v1/jobToken/exchange", "", body, &exchanged)
 	if errCall != nil {
-		return jobToken{}, pluginkit.NewError("upstream_unavailable", "Qoder token exchange failed: "+errCall.Error(), http.StatusBadGateway)
+		return jobToken{}, cpakit.NewError("upstream_unavailable", "Qoder token exchange failed: "+errCall.Error(), http.StatusBadGateway)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
 		return jobToken{}, classifyOpenAPIError(result.StatusCode, "token exchange", result.Body)
 	}
 	if strings.TrimSpace(exchanged.Token) == "" {
-		return jobToken{}, pluginkit.NewError("invalid_credential", "Qoder token exchange returned no job token", http.StatusUnauthorized)
+		return jobToken{}, cpakit.NewError("invalid_credential", "Qoder token exchange returned no job token", http.StatusUnauthorized)
 	}
 
 	expiresAt := time.Now().Add(jobTokenDefaultTTL)
@@ -268,13 +268,13 @@ func exchangeJobToken(ctx context.Context, pat string, reg *region) (jobToken, e
 	var info userInfoResponse
 	resultInfo, errInfo := openAPIJSON(ctx, reg, http.MethodGet, "/api/v1/userinfo", exchanged.Token, nil, &info)
 	if errInfo != nil {
-		return jobToken{}, pluginkit.NewError("upstream_unavailable", "Qoder identity lookup failed: "+errInfo.Error(), http.StatusBadGateway)
+		return jobToken{}, cpakit.NewError("upstream_unavailable", "Qoder identity lookup failed: "+errInfo.Error(), http.StatusBadGateway)
 	}
 	if resultInfo.StatusCode < 200 || resultInfo.StatusCode >= 300 {
 		return jobToken{}, classifyOpenAPIError(resultInfo.StatusCode, "identity lookup", resultInfo.Body)
 	}
 	if strings.TrimSpace(info.ID) == "" {
-		return jobToken{}, pluginkit.NewError("invalid_credential", "Qoder identity lookup returned no user id", http.StatusUnauthorized)
+		return jobToken{}, cpakit.NewError("invalid_credential", "Qoder identity lookup returned no user id", http.StatusUnauthorized)
 	}
 
 	return jobToken{

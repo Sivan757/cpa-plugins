@@ -57,6 +57,9 @@ func Fail(code, message string, httpStatus ...int) []byte {
 	return out
 }
 
+// Envelope is the JSON message exchanged across the C ABI in both directions.
+type Envelope = pluginabi.Envelope
+
 // Capabilities mirrors the host's rpcCapabilities wire shape. Only the fields a
 // provider plugin can meaningfully declare are listed.
 type Capabilities struct {

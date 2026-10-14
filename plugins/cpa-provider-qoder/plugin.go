@@ -5,123 +5,90 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.2.0"
 
-// defaultCatalogTTL keeps a catalog snapshot briefly so the model-list request
-// the host makes immediately before a chat does not hit the upstream twice.
-const defaultCatalogTTL = 5 * time.Minute
+// providerKey is the single credential provider key this plugin serves.
+//
+// Both Qoder deployments share one key on purpose. The region is part of the
+// credential (each auth record carries its own), while the host binds one
+// executor per key, so a single library serves a qoder.sh account and a
+// qoder.com.cn account at the same time. Splitting the key would force a user
+// who holds both to add two providers that differ only by a field.
+const providerKey = "qoder"
 
-// configState is the plugin's own configuration block.
-type configState struct {
-	pat    string
-	region string
-}
+// providerDisplayName is the management-visible provider name.
+const providerDisplayName = "CLIProxyAPI Qoder Provider"
 
-// pluginState holds the runtime state shared by every capability.
-type pluginState struct {
-	cfg    *configState
-	tokens *jobTokenCache
-	cache  *catalogCache
-
-	mu        sync.Mutex
-	lastError string
-
-	// transportOverride redirects the transport at a local upstream. Tests set
-	// it; nothing in production does.
-	transportOverride *region
-}
-
-func newPluginState() *pluginState {
-	return &pluginState{
-		cfg:    &configState{},
-		tokens: newJobTokenCache(),
-		cache:  newCatalogCache(defaultCatalogTTL),
-	}
-}
-
-// activeRegion maps a resolved region onto the transport's target.
-func (p *pluginState) activeRegion(resolved *region) *region {
-	if p.transportOverride != nil {
-		return p.transportOverride
-	}
-	if resolved == nil {
-		return regionFor(defaultRegionID)
-	}
-	return resolved
-}
-
-func (p *pluginState) recordError(err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if err == nil {
-		p.lastError = ""
-		return
-	}
-	p.lastError = err.Error()
-}
-
-func (p *pluginState) recordedError() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastError
-}
-
-// gateway bundles the capabilities this plugin implements.
+// gateway is the plugin. It holds one pluginState and serves every method the
+// provider declares.
 type gateway struct {
-	*pluginkit.Base
 	impl *pluginState
 }
 
-// newGateway assembles the plugin's capability set.
 func newGateway() *gateway {
-	impl := newPluginState()
-	gw := &gateway{impl: impl}
-	gw.Base = &pluginkit.Base{
-		Identity: pluginkit.Metadata{
-			Name:             "CLIProxyAPI Qoder Provider",
-			Version:          pluginVersion,
-			Author:           "cpa-plugins",
-			GitHubRepository: "https://github.com/mo-n/dsh-provider-qoder",
-			ConfigFields: []pluginkit.ConfigField{
-				{
-					Name:        "pat",
-					Type:        pluginkit.FieldString,
-					Description: `Qoder personal access token. Create one in the Qoder web console under account integrations.`,
-				},
-				{
-					Name:        "region",
-					Type:        pluginkit.FieldEnum,
-					EnumValues:  []string{"global", "china"},
-					Description: `Which Qoder deployment this credential belongs to: global (qoder.sh) or china (qoder.com.cn).`,
-				},
-				{
-					Name:        "cache_ttl_seconds",
-					Type:        pluginkit.FieldInteger,
-					Description: `How long a fetched model catalog is reused before it is read again.`,
-				},
-			},
-		},
-		ProviderKey:   providerKey,
-		InputFormats:  []string{executorInputFormat},
-		OutputFormats: []string{executorOutputFormat},
-		Quota:         gw,
-		Auth:          gw,
-		Models:        gw,
-		Exec:          gw,
-		Mgmt:          gw,
-		OnConfigure:   gw.configure,
-	}
-	return gw
+	return &gateway{impl: newPluginState()}
 }
 
-func (g *gateway) configure(cfg *pluginkit.Config) error {
+// ---- Plugin contract ----
+
+// Metadata implements cpakit.Plugin.
+func (g *gateway) Metadata() cpakit.Metadata {
+	return cpakit.Metadata{
+		Name:             providerDisplayName,
+		Version:          pluginVersion,
+		Author:           "cpa-plugins",
+		GitHubRepository: "https://github.com/Sivan757/cpa-plugins",
+		ConfigFields: []cpakit.ConfigField{
+			{
+				Name:        "pat",
+				Type:        cpakit.FieldString,
+				Description: "Qoder personal access token. Create one in the Qoder web console under account integrations.",
+			},
+			{
+				Name:        "region",
+				Type:        cpakit.FieldEnum,
+				EnumValues:  []string{"global", "china"},
+				Description: "Which Qoder deployment this credential belongs to: global (qoder.sh) or china (qoder.com.cn).",
+			},
+			{
+				Name:        "cache_ttl_seconds",
+				Type:        cpakit.FieldInteger,
+				Description: "How long a fetched model catalog is reused before it is read again.",
+			},
+		},
+	}
+}
+
+// ProviderKey implements cpakit.Plugin.
+func (g *gateway) ProviderKey() string { return providerKey }
+
+// Capabilities implements cpakit.Plugin. The credential, model, execution,
+// quota, and management surfaces are all served by this plugin.
+func (g *gateway) Capabilities() cpakit.Capabilities {
+	return cpakit.Capabilities{
+		QuotaProvider:         true,
+		AuthProvider:          true,
+		ModelProvider:         true,
+		Executor:              true,
+		ExecutorModelScope:    cpakit.ScopeBoth,
+		ExecutorInputFormats:  []string{executorInputFormat},
+		ExecutorOutputFormats: []string{executorOutputFormat},
+		ManagementAPI:         true,
+	}
+}
+
+// Configure implements cpakit.Plugin.
+func (g *gateway) Configure(configYAML []byte) error {
+	cfg, errParse := cpakit.ParseConfig(configYAML)
+	if errParse != nil {
+		return errParse
+	}
 	p := g.impl
 	p.cfg.pat = strings.TrimSpace(cfg.String("pat", ""))
 	p.cfg.region = strings.TrimSpace(cfg.String("region", ""))
@@ -131,96 +98,178 @@ func (g *gateway) configure(cfg *pluginkit.Config) error {
 	return nil
 }
 
-// ownsProvider reports whether a provider key names this provider.
-//
-// An empty key means the host did not say which credential it is asking about,
-// and this plugin is the only one that can answer, so it counts as ours.
-func (g *gateway) ownsProvider(provider string) bool {
-	trimmed := strings.TrimSpace(provider)
-	return trimmed == "" || strings.EqualFold(trimmed, providerKey)
+// Dispatch implements cpakit.Plugin. Every method the host may send is routed
+// here; an unimplemented method reports itself as unhandled rather than failing.
+func (g *gateway) Dispatch(ctx context.Context, method string, request json.RawMessage) (any, error) {
+	switch method {
+	// ---- auth ----
+	case cpakit.MethodAuthParse:
+		req, errDecode := cpakit.Decode[cpakit.AuthParseRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.ParseAuth(ctx, req)
+	case cpakit.MethodAuthLoginStart:
+		req, errDecode := cpakit.Decode[cpakit.AuthLoginStartRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.StartLogin(ctx, req)
+	case cpakit.MethodAuthLoginPoll:
+		req, errDecode := cpakit.Decode[cpakit.AuthLoginPollRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.PollLogin(ctx, req)
+	case cpakit.MethodAuthRefresh:
+		req, errDecode := cpakit.Decode[cpakit.AuthRefreshRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.RefreshAuth(ctx, req)
+
+	// ---- models ----
+	case cpakit.MethodModelStatic:
+		req, errDecode := cpakit.Decode[cpakit.StaticModelRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.StaticModels(ctx, req)
+	case cpakit.MethodModelForAuth:
+		req, errDecode := cpakit.Decode[cpakit.AuthModelRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.ModelsForAuth(ctx, req)
+	case cpakit.MethodModelRegister:
+		req, errDecode := cpakit.Decode[cpakit.ModelRegistrationRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.RegisterModels(ctx, req)
+
+	// ---- quota ----
+	case cpakit.MethodQuotaDescribe:
+		return g.DescribeQuota(), nil
+	case cpakit.MethodQuotaFetch:
+		req, errDecode := cpakit.Decode[cpakit.QuotaFetchRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.FetchQuota(ctx, req)
+	case cpakit.MethodQuotaReset:
+		req, errDecode := cpakit.Decode[cpakit.QuotaResetRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.ResetQuota(ctx, req)
+
+	// ---- execution ----
+	case cpakit.MethodExecutorExecute:
+		req, streamID, errDecode := cpakit.DecodeExecutorRequest(request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		// A stream-flagged request may arrive on either method; the stream path
+		// owns it once the host has allocated a downstream stream.
+		if req.Stream {
+			return g.ExecuteStream(ctx, req, streamID)
+		}
+		return g.Execute(ctx, req)
+	case cpakit.MethodExecutorExecuteStream:
+		req, streamID, errDecode := cpakit.DecodeExecutorRequest(request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.ExecuteStream(ctx, req, streamID)
+	case cpakit.MethodExecutorCountTokens:
+		return cpakit.ExecutorResponse{}, cpakit.ErrUnhandled
+	case cpakit.MethodExecutorHTTPRequest:
+		req, errDecode := cpakit.Decode[cpakit.ExecutorHTTPRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.HttpRequest(ctx, req)
+
+	// ---- management ----
+	case cpakit.MethodManagementRegister:
+		return g.RegisterManagement(ctx)
+	case cpakit.MethodManagementHandle:
+		req, errDecode := cpakit.Decode[cpakit.ManagementRequest](request)
+		if errDecode != nil {
+			return nil, errDecode
+		}
+		return g.HandleManagement(ctx, req)
+	}
+	return nil, cpakit.ErrUnhandled
 }
 
-// ---- QuotaProvider ----
+// ---- capabilities ----
 
-// QuotaIdentifier implements pluginkit.QuotaProvider.
-func (g *gateway) QuotaIdentifier() string { return providerKey }
-
-// DescribeQuota implements pluginkit.QuotaProvider.
-func (g *gateway) DescribeQuota() pluginkit.QuotaDescribeResponse {
-	return pluginkit.QuotaDescribeResponse{
+// DescribeQuota declares the credential family this plugin owns.
+func (g *gateway) DescribeQuota() cpakit.QuotaDescribeResponse {
+	return cpakit.QuotaDescribeResponse{
 		SupportedProviders: []string{providerKey},
 		DisplayName:        "Qoder 额度",
 	}
 }
 
-// FetchQuota implements pluginkit.QuotaProvider.
-func (g *gateway) FetchQuota(ctx context.Context, req pluginkit.QuotaFetchRequest) (pluginkit.QuotaFetchResponse, error) {
+// FetchQuota returns normalised quota for one credential.
+func (g *gateway) FetchQuota(ctx context.Context, req cpakit.QuotaFetchRequest) (cpakit.QuotaFetchResponse, error) {
 	if !g.ownsProvider(req.Provider) {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.ErrUnhandled
+		return cpakit.QuotaFetchResponse{}, cpakit.ErrUnhandled
 	}
 	response, errQuota := g.impl.fetchQuota(ctx, req.StorageJSON)
 	g.impl.recordError(errQuota)
 	if errQuota != nil {
-		return pluginkit.QuotaFetchResponse{}, errQuota
+		return cpakit.QuotaFetchResponse{}, errQuota
 	}
 	return response, nil
 }
 
-// ResetQuota implements pluginkit.QuotaProvider. Qoder exposes no reset call.
-func (g *gateway) ResetQuota(context.Context, pluginkit.QuotaResetRequest) (pluginkit.QuotaResetResponse, error) {
-	return pluginkit.QuotaResetResponse{}, pluginkit.ErrUnhandled
+// ResetQuota is not offered by Qoder.
+func (g *gateway) ResetQuota(context.Context, cpakit.QuotaResetRequest) (cpakit.QuotaResetResponse, error) {
+	return cpakit.QuotaResetResponse{}, cpakit.ErrUnhandled
 }
 
-// ---- ModelProvider ----
-
-// StaticModels implements pluginkit.ModelProvider. It deliberately returns an
-// empty roster: the static path has no credential, so the per-account excluded
-// models cannot be applied there and a static roster would re-advertise models
-// the user hid. Registration happens through model.for_auth instead, which
-// carries the credential and therefore the exclusions.
-func (g *gateway) StaticModels(context.Context, pluginkit.StaticModelRequest) (pluginkit.ModelResponse, error) {
-	return pluginkit.ModelResponse{Provider: providerKey}, nil
+// StaticModels returns an empty roster on purpose: the static path carries no
+// credential, so per-account exclusions cannot be applied there and a static
+// roster would re-advertise models the user hid. Registration runs through
+// model.for_auth, which carries the credential and therefore the exclusions.
+func (g *gateway) StaticModels(context.Context, cpakit.StaticModelRequest) (cpakit.ModelResponse, error) {
+	return cpakit.ModelResponse{Provider: providerKey}, nil
 }
 
-// ModelsForAuth implements pluginkit.ModelProvider.
+// ModelsForAuth reports the roster one credential can actually drive.
 //
-// When the catalog is unreachable this returns the static roster: an empty model
-// list would remove the provider from the picker entirely, which is worse than a
-// conservative list.
-func (g *gateway) ModelsForAuth(ctx context.Context, req pluginkit.AuthModelRequest) (pluginkit.ModelResponse, error) {
+// When the catalog is unreachable this falls back to the static roster: an empty
+// model list would remove the provider from the picker entirely, which is worse
+// than a conservative list.
+func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest) (cpakit.ModelResponse, error) {
 	models, errModels := g.impl.modelsForAuth(ctx, req, req.StorageJSON)
 	if errModels != nil {
 		g.impl.recordError(errModels)
-		return pluginkit.ModelResponse{
+		return cpakit.ModelResponse{
 			Provider: providerKey,
 			Models:   mustStaticRoutes(regionFor(firstNonEmpty(req.Attributes["region"], g.impl.cfg.region))),
 		}, nil
 	}
-	return pluginkit.ModelResponse{Provider: providerKey, Models: models}, nil
+	return cpakit.ModelResponse{Provider: providerKey, Models: models}, nil
 }
 
-// RegisterModels implements pluginkit.ModelProvider. Returning nothing here is
-// deliberate: ModelProvider already registers the live roster through
-// model.static and model.for_auth, and this legacy path re-adds every model it
-// is given without applying exclusions.
-func (g *gateway) RegisterModels(context.Context, pluginkit.ModelRegistrationRequest) (pluginkit.ModelRegistrationResponse, error) {
-	return pluginkit.ModelRegistrationResponse{Provider: providerKey}, nil
+// RegisterModels contributes nothing: ModelProvider already registers the live
+// roster, and this legacy path re-adds every model without applying exclusions.
+func (g *gateway) RegisterModels(context.Context, cpakit.ModelRegistrationRequest) (cpakit.ModelRegistrationResponse, error) {
+	return cpakit.ModelRegistrationResponse{Provider: providerKey}, nil
 }
 
-// ---- Executor ----
-
-// ExecutorIdentifier implements pluginkit.Executor.
-func (g *gateway) ExecutorIdentifier() string { return providerKey }
-
-// ---- ManagementAPI ----
-
-// RegisterManagement implements pluginkit.ManagementAPI.
-func (g *gateway) RegisterManagement(context.Context, pluginkit.ManagementRegistrationRequest) (pluginkit.ManagementRegistrationResponse, error) {
-	return pluginkit.ManagementRegistrationResponse{
+// RegisterManagement declares the plugin's diagnostic route.
+func (g *gateway) RegisterManagement(context.Context) (cpakit.ManagementRegistrationResponse, error) {
+	return cpakit.ManagementRegistrationResponse{
 		// The host prefixes a relative path with the management base, so this
 		// lands on /v0/management/plugins/cpa-provider-qoder/status. A bare
 		// "status" would occupy a global path shared by every plugin.
-		Routes: []pluginkit.ManagementRoute{{
+		Routes: []cpakit.ManagementRoute{{
 			Method:      "GET",
 			Path:        "plugins/cpa-provider-qoder/status",
 			Description: "Credential, endpoint, codec, and catalog diagnostics for this provider",
@@ -228,16 +277,27 @@ func (g *gateway) RegisterManagement(context.Context, pluginkit.ManagementRegist
 	}, nil
 }
 
-// HandleManagement implements pluginkit.ManagementAPI.
-func (g *gateway) HandleManagement(ctx context.Context, req pluginkit.ManagementRequest) (pluginkit.ManagementResponse, error) {
+// HandleManagement serves the diagnostic route.
+func (g *gateway) HandleManagement(ctx context.Context, req cpakit.ManagementRequest) (cpakit.ManagementResponse, error) {
 	if !strings.HasSuffix(strings.TrimSuffix(req.Path, "/"), "/status") {
-		return pluginkit.ManagementResponse{StatusCode: 404, Body: []byte(`{"error":"not found"}`)}, nil
+		return cpakit.ManagementResponse{StatusCode: 404, Body: []byte("{\"error\":\"not found\"}")}, nil
 	}
 	body, errMarshal := json.MarshalIndent(g.statusReport(ctx), "", "  ")
 	if errMarshal != nil {
-		return pluginkit.ManagementResponse{StatusCode: 500, Body: []byte(`{"error":"encode diagnostics"}`)}, nil
+		return cpakit.ManagementResponse{StatusCode: 500, Body: []byte("{\"error\":\"encode diagnostics\"}")}, nil
 	}
-	return pluginkit.JSONManagementResponse(200, body)
+	return cpakit.JSONManagementResponse(200, body)
+}
+
+// ---- helpers ----
+
+// ownsProvider reports whether a provider key names this provider.
+//
+// An empty key means the host did not say which credential it is asking about,
+// and this plugin is the only one that can answer, so it counts as ours.
+func (g *gateway) ownsProvider(provider string) bool {
+	trimmed := strings.TrimSpace(provider)
+	return trimmed == "" || strings.EqualFold(trimmed, providerKey)
 }
 
 // statusReport is the diagnostic payload served on the plugin status route.
@@ -286,7 +346,7 @@ func (g *gateway) statusReport(ctx context.Context) map[string]any {
 // codecSelfCheck proves the body codec round-trips, which is the one internal
 // transform whose failure mode is an opaque upstream rejection.
 func codecSelfCheck() string {
-	probe := []byte(`{"probe":true}`)
+	probe := []byte("{\"probe\":true}")
 	decoded, errDecode := qoderDecodeBody(qoderEncodeBody(probe))
 	if errDecode != nil || !bytes.Equal(decoded, probe) {
 		return "broken"
@@ -294,12 +354,8 @@ func codecSelfCheck() string {
 	return "ok"
 }
 
-// identityUID returns the subscriber id used to salt the session key. It reads
-// the cached job token when one has been exchanged; the plugin-level machine id
-// is the fallback, which keeps the session stable across a token refresh.
+// identityUID returns the subscriber id used to salt the session key.
 func (p *pluginState) identityUID(storageJSON []byte) string {
-	// The PAT is the natural salt when one is configured: it is stable per
-	// subscriber and does not change across token refreshes.
 	if p.cfg != nil && p.cfg.pat != "" {
 		return p.cfg.pat
 	}

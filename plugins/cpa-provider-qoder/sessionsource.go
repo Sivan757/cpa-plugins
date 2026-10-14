@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // pluginkitSessionSource is the slice of a request this plugin reads a session
@@ -21,7 +21,7 @@ func (h headerSource) HeaderGet(key string) string { return h.header.Get(key) }
 // sessionFromRequest extracts a session hint from the executor request: first
 // the metadata bag key the host normalises thirty-odd session headers into,
 // then the raw inbound headers.
-func sessionFromRequest(req pluginkit.ExecutorRequest) string {
+func sessionFromRequest(req cpakit.ExecutorRequest) string {
 	if value, ok := req.Metadata["execution_session_id"].(string); ok {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
 			return trimmed

@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // TestAdvertisedLimitsComeFromTheVendorSpec pins the two numbers a host budgets
@@ -49,7 +49,7 @@ func TestAdvertisedLimitsComeFromTheVendorSpec(t *testing.T) {
 func TestTheRequestDeclaresTheAdvertisedBudget(t *testing.T) {
 	limits := modelLimits{Window: 1_000_000, Output: 131_072}
 	body := []byte(`{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}]}`)
-	request := pluginkit.ExecutorRequest{Model: "qwen3.8-max", Payload: body}
+	request := cpakit.ExecutorRequest{Model: "qwen3.8-max", Payload: body}
 	out, _, errPrepare := prepareChatBody(request, newTurnIdentity("uid", "sess"), "qmodel_38max", limits)
 	if errPrepare != nil {
 		t.Fatalf("prepare: %v", errPrepare)

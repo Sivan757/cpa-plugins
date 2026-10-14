@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // TestBuildModelsUsesTheLowercaseDisplayNameAsTheID pins the picker contract: the
@@ -35,7 +35,7 @@ func TestBuildModelsUsesTheLowercaseDisplayNameAsTheID(t *testing.T) {
 func TestRouteKeyResolvesThroughTheCache(t *testing.T) {
 	p := newPluginState()
 	p.cache.put(
-		[]pluginkit.ModelInfo{{ID: "DeepSeek-V4-Pro", Name: "dmodel"}},
+		[]cpakit.ModelInfo{{ID: "DeepSeek-V4-Pro", Name: "dmodel"}},
 		map[string]string{"DeepSeek-V4-Pro": "dmodel"},
 	)
 	if got := p.routeKey("DeepSeek-V4-Pro"); got != "dmodel" {

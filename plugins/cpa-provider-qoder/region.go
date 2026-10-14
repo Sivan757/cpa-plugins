@@ -2,15 +2,6 @@ package main
 
 import "runtime"
 
-// providerKey is the credential provider key this plugin owns.
-//
-// Both Qoder deployments share one key on purpose. The region is part of the
-// credential (each auth record carries its own), while the host binds one
-// executor per key, so a single library serves a qoder.sh account and a
-// qoder.com.cn account at the same time. Splitting the key would force a user
-// who holds both to add two providers that differ only by a field.
-const providerKey = "qoder"
-
 // ideVersion is the client version the COSY signature advertises. It is written
 // both into the Cosy-Version header and inside the signed payload, so the two
 // must stay identical or the upstream rejects the signature outright.

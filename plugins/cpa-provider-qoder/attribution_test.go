@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // TestSessionKeyMatchesTheOfficialDerivation pins the session formula. The
@@ -53,7 +53,7 @@ func TestTurnIdentitySharesTheSetID(t *testing.T) {
 // key the host normalises thirty-odd session headers into wins over the raw
 // headers.
 func TestRequestSessionPrefersTheHostExecutionSession(t *testing.T) {
-	req := pluginkit.ExecutorRequest{
+	req := cpakit.ExecutorRequest{
 		Metadata: map[string]any{"execution_session_id": "exec-1"},
 		Headers:  http.Header{"X-Conversation-Id": []string{"conv-1"}},
 	}
@@ -61,12 +61,12 @@ func TestRequestSessionPrefersTheHostExecutionSession(t *testing.T) {
 		t.Fatalf("session = %q, want the host execution session", got)
 	}
 
-	req = pluginkit.ExecutorRequest{Headers: http.Header{"X-Conversation-Id": []string{"conv-1"}}}
+	req = cpakit.ExecutorRequest{Headers: http.Header{"X-Conversation-Id": []string{"conv-1"}}}
 	if got := sessionFromRequest(req); got != "conv-1" {
 		t.Fatalf("session = %q, want the conversation header as the fallback", got)
 	}
 
-	req = pluginkit.ExecutorRequest{}
+	req = cpakit.ExecutorRequest{}
 	if got := sessionFromRequest(req); got != "" {
 		t.Fatalf("session = %q, want empty when nothing carries one", got)
 	}

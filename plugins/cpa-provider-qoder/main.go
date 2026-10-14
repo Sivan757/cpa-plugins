@@ -1,14 +1,7 @@
-// Command cpa-provider-qoder is a CLIProxyAPI native plugin that serves the
-// Qoder (Alibaba) subscription: PAT credentials, model catalog, chat
-// execution, and account quota.
-//
-// One binary serves both Qoder deployments. The region is a credential-level
-// property rather than a build-level one, so the plugin owns the single
-// provider key "qoder" and resolves the deployment from the auth record.
+// Command cpa-provider-qoder serves Qoder subscription credentials behind one
+// CLIProxyAPI provider key.
 package main
 
-import "github.com/sivan/cpa-plugins/internal/pluginkit"
+import "github.com/sivan/cpa-plugins/internal/cpakit"
 
-func init() {
-	pluginkit.RegisterPlugin(newGateway())
-}
+func init() { cpakit.RegisterPlugin(newGateway()) }

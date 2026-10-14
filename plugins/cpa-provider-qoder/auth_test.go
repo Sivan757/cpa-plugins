@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // TestParseAuthPreservesUserManagedFields covers the visibility-save flow: the
@@ -12,7 +12,7 @@ import (
 // erase the user's model visibility choices on the next re-synthesis.
 func TestParseAuthPreservesUserManagedFields(t *testing.T) {
 	g := newGateway()
-	resp, errParse := g.ParseAuth(t.Context(), pluginkit.AuthParseRequest{
+	resp, errParse := g.ParseAuth(t.Context(), cpakit.AuthParseRequest{
 		Provider: providerKey,
 		FileName: providerKey + ".json",
 		RawJSON: []byte(`{

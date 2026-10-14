@@ -33,6 +33,11 @@ type Plugin interface {
 // ErrUnhandled reports a method this plugin does not implement.
 var ErrUnhandled = errors.New("method not handled by plugin")
 
+// HandleCall is the entry point the generated C ABI glue uses: one method plus
+// request bytes in, one encoded envelope out. It is exported so tests can drive
+// a plugin exactly the way the host does.
+func HandleCall(method string, request []byte) []byte { return Handle(method, request) }
+
 // Runtime drives the JSON envelope protocol for one plugin.
 type Runtime struct {
 	plugin Plugin
@@ -153,7 +158,7 @@ func callbackIDFromRequest(request []byte) string {
 }
 
 // NewError builds a classified error with an HTTP status.
-func NewError(code, message string, httpStatus ...int) error {
+func NewError(code, message string, httpStatus ...int) *Error {
 	status := 0
 	if len(httpStatus) > 0 {
 		status = httpStatus[0]

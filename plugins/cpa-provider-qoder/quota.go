@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // rawQuota is one quota block. Every numeric field is optional: the upstream
@@ -161,20 +161,20 @@ func clampFraction(value float64) float64 {
 // Only the quota read is fatal. The plan and status calls enrich the answer, so
 // a failure there degrades the panel instead of failing the request: the
 // upstream has served each of them with a different field vocabulary per region.
-func (p *pluginState) fetchQuota(ctx context.Context, storageJSON []byte) (pluginkit.QuotaFetchResponse, error) {
+func (p *pluginState) fetchQuota(ctx context.Context, storageJSON []byte) (cpakit.QuotaFetchResponse, error) {
 	creds, errCreds := p.resolveCredentials(ctx, storageJSON)
 	if errCreds != nil {
-		return pluginkit.QuotaFetchResponse{}, errCreds
+		return cpakit.QuotaFetchResponse{}, errCreds
 	}
 	token := creds.Identity.AuthToken
 
 	var usage rawUsage
 	result, errCall := openAPIJSON(ctx, creds.Region, http.MethodGet, "/api/v2/quota/usage", token, nil, &usage)
 	if errCall != nil {
-		return pluginkit.QuotaFetchResponse{}, errCall
+		return cpakit.QuotaFetchResponse{}, errCall
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return pluginkit.QuotaFetchResponse{}, classifyOpenAPIError(result.StatusCode, "quota query", result.Body)
+		return cpakit.QuotaFetchResponse{}, classifyOpenAPIError(result.StatusCode, "quota query", result.Body)
 	}
 
 	plan, planOK := p.readPlan(ctx, creds)
@@ -182,12 +182,12 @@ func (p *pluginState) fetchQuota(ctx context.Context, storageJSON []byte) (plugi
 
 	groups := buildQuotaGroups(creds.Region, &usage)
 	summary := buildQuotaSummary(&usage)
-	response := pluginkit.QuotaFetchResponse{
+	response := cpakit.QuotaFetchResponse{
 		Summary: summary,
 		Groups:  groups,
 	}
 	if planOK || statusOK {
-		response.Subscription = &pluginkit.QuotaSubscription{
+		response.Subscription = &cpakit.QuotaSubscription{
 			Plan: planLabel(plan, status, planOK, statusOK),
 			TierName: firstNonEmpty(planValue(plan, planOK, func(value rawPlan) string {
 				return firstNonEmpty(value.PlanTierName, value.PlanTierCamel, value.PlanName)
@@ -226,14 +226,14 @@ func planLabel(plan rawPlan, status rawStatus, okPlan, okStatus bool) string {
 }
 
 // buildQuotaGroups renders one bucket per quota block the account exposes.
-func buildQuotaGroups(reg *region, usage *rawUsage) []pluginkit.QuotaGroup {
-	buckets := make([]pluginkit.QuotaBucket, 0, 4)
+func buildQuotaGroups(reg *region, usage *rawUsage) []cpakit.QuotaGroup {
+	buckets := make([]cpakit.QuotaBucket, 0, 4)
 	appendBucket := func(label string, raw *rawQuota) {
 		normalized, okQuota := normalizeQuota(raw)
 		if !okQuota {
 			return
 		}
-		buckets = append(buckets, pluginkit.QuotaBucket{
+		buckets = append(buckets, cpakit.QuotaBucket{
 			Window:            label,
 			RemainingFraction: remainingFraction(normalized),
 			Description:       fmt.Sprintf("剩余 %g / %g %s", normalized.Remaining, normalized.Total, normalized.Unit),
@@ -249,20 +249,20 @@ func buildQuotaGroups(reg *region, usage *rawUsage) []pluginkit.QuotaGroup {
 		if !okQuota {
 			continue
 		}
-		bucket := pluginkit.QuotaBucket{
+		bucket := cpakit.QuotaBucket{
 			Window:            label,
 			RemainingFraction: remainingFraction(normalized),
 			Description:       fmt.Sprintf("剩余 %g / %g %s", normalized.Remaining, normalized.Total, normalized.Unit),
 		}
 		if expiry, okExpiry := timestampValue(pkg.ExpiresAt); okExpiry {
-			bucket.ResetTime = pluginkit.FormatResetTime(expiry)
+			bucket.ResetTime = cpakit.FormatResetTime(expiry)
 		}
 		buckets = append(buckets, bucket)
 	}
 	if len(buckets) == 0 {
 		return nil
 	}
-	return []pluginkit.QuotaGroup{{DisplayName: reg.displayName + " 额度", Buckets: buckets}}
+	return []cpakit.QuotaGroup{{DisplayName: reg.displayName + " 额度", Buckets: buckets}}
 }
 
 // resourcePackageLabel reads the subscriber-facing copy.
@@ -306,7 +306,7 @@ func localizedLabel(label rawDisplayLabel) string {
 
 // buildQuotaSummary reports the totals a user checks first, summing the blocks
 // so that addOnQuota is included rather than shadowed by the empty plan block.
-func buildQuotaSummary(usage *rawUsage) []pluginkit.QuotaMetric {
+func buildQuotaSummary(usage *rawUsage) []cpakit.QuotaMetric {
 	remaining := 0.0
 	used := 0.0
 	total := 0.0
@@ -330,17 +330,17 @@ func buildQuotaSummary(usage *rawUsage) []pluginkit.QuotaMetric {
 	if !anyBlock {
 		return nil
 	}
-	metrics := []pluginkit.QuotaMetric{
-		pluginkit.Metric("remaining_credits", "剩余额度", remaining, unit),
-		pluginkit.Metric("used_credits", "已用额度", used, unit),
-		pluginkit.Metric("total_credits", "总额度", total, unit),
+	metrics := []cpakit.QuotaMetric{
+		cpakit.Metric("remaining_credits", "剩余额度", remaining, unit),
+		cpakit.Metric("used_credits", "已用额度", used, unit),
+		cpakit.Metric("total_credits", "总额度", total, unit),
 	}
 	if usage.IsQuotaExceeded != nil {
 		exceeded := 0.0
 		if *usage.IsQuotaExceeded {
 			exceeded = 1
 		}
-		metrics = append(metrics, pluginkit.Metric("quota_exceeded", "额度已用尽", exceeded, ""))
+		metrics = append(metrics, cpakit.Metric("quota_exceeded", "额度已用尽", exceeded, ""))
 	}
 	return metrics
 }
@@ -352,18 +352,18 @@ func buildQuotaSummary(usage *rawUsage) []pluginkit.QuotaMetric {
 func quotaResetTime(usage *rawUsage, plan rawPlan, okPlan bool, status rawStatus, okStatus bool) string {
 	if okStatus {
 		if reset, okReset := timestampValue(status.NextResetAt); okReset {
-			return pluginkit.FormatResetTime(reset)
+			return cpakit.FormatResetTime(reset)
 		}
 	}
 	if okPlan {
 		if end, okEnd := timestampValue(plan.EndDate); okEnd {
-			return pluginkit.FormatResetTime(end)
+			return cpakit.FormatResetTime(end)
 		}
 	}
 	return ""
 }
 
-func attachResetTime(groups []pluginkit.QuotaGroup, reset string) {
+func attachResetTime(groups []cpakit.QuotaGroup, reset string) {
 	for groupIndex := range groups {
 		for bucketIndex := range groups[groupIndex].Buckets {
 			if groups[groupIndex].Buckets[bucketIndex].ResetTime == "" {
@@ -393,7 +393,7 @@ func (p *pluginState) readStatus(ctx context.Context, creds *credentials) (rawSt
 	headers.Set("Cosy-MachineType", "host")
 	url := strings.TrimSuffix(creds.Region.openAPI, "/") + "/api/v3/user/status"
 	var status rawStatus
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodGet, url, headers, nil, &status)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, url, headers, nil, &status)
 	if errCall != nil || result.StatusCode < 200 || result.StatusCode >= 300 {
 		return rawStatus{}, false
 	}

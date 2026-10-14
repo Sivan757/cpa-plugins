@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // modelLimits is the request budget a model advertises: the context window the
@@ -20,7 +20,7 @@ type modelLimits struct {
 // the host makes before a chat does not hit the upstream twice.
 type catalogCache struct {
 	mu     sync.Mutex
-	models []pluginkit.ModelInfo
+	models []cpakit.ModelInfo
 	// routes maps the advertised model id to the upstream routing key.
 	routes   map[string]string
 	loadedAt time.Time
@@ -31,7 +31,7 @@ func newCatalogCache(ttl time.Duration) *catalogCache {
 	return &catalogCache{ttl: ttl}
 }
 
-func (c *catalogCache) get() ([]pluginkit.ModelInfo, map[string]string, bool) {
+func (c *catalogCache) get() ([]cpakit.ModelInfo, map[string]string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.models) == 0 || c.ttl <= 0 || time.Since(c.loadedAt) > c.ttl {
@@ -40,7 +40,7 @@ func (c *catalogCache) get() ([]pluginkit.ModelInfo, map[string]string, bool) {
 	return c.models, c.routes, true
 }
 
-func (c *catalogCache) put(models []pluginkit.ModelInfo, routes map[string]string) {
+func (c *catalogCache) put(models []cpakit.ModelInfo, routes map[string]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.models = models
@@ -69,11 +69,11 @@ func (c *catalogCache) ttlSeconds() float64 {
 }
 
 // modelsForAuth discovers the live roster for one credential.
-func (p *pluginState) modelsForAuth(ctx context.Context, req pluginkit.AuthModelRequest, storageJSON []byte) ([]pluginkit.ModelInfo, error) {
-	excluded := pluginkit.ExcludedModelsFor(req.Host, providerKey)
-	excluded = append(excluded, pluginkit.RequestExcludedModels(req.Attributes)...)
+func (p *pluginState) modelsForAuth(ctx context.Context, req cpakit.AuthModelRequest, storageJSON []byte) ([]cpakit.ModelInfo, error) {
+	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
+	excluded = append(excluded, cpakit.RequestExcludedModels(req.Attributes)...)
 	if cached, _, okCache := p.cache.get(); okCache {
-		return pluginkit.FilterModelsByExclusion(cached, excluded), nil
+		return cpakit.FilterModelsByExclusion(cached, excluded), nil
 	}
 	creds, errCreds := p.resolveCredentials(ctx, storageJSON)
 	if errCreds != nil {
@@ -85,10 +85,10 @@ func (p *pluginState) modelsForAuth(ctx context.Context, req pluginkit.AuthModel
 	}
 	models, routes := buildModels(creds.Region, entries)
 	if len(models) == 0 {
-		return nil, pluginkit.NewError("upstream_error", "the Qoder catalog contained no enabled models", 502)
+		return nil, cpakit.NewError("upstream_error", "the Qoder catalog contained no enabled models", 502)
 	}
 	p.cache.put(models, routes)
-	return pluginkit.FilterModelsForRequest(models, req.Host, providerKey, req.Attributes), nil
+	return cpakit.FilterModelsForRequest(models, req.Host, providerKey, req.Attributes), nil
 }
 
 // staticFallback is the last-resort roster used when the catalog is unreachable.
@@ -97,7 +97,7 @@ func (p *pluginState) modelsForAuth(ctx context.Context, req pluginkit.AuthModel
 // worse than a conservative list. The identifiers come from the reference
 // client's built-in defaults and carry placeholder limits because the plugin
 // cannot verify real ones offline.
-func staticFallback(reg *region) ([]pluginkit.ModelInfo, map[string]string) {
+func staticFallback(reg *region) ([]cpakit.ModelInfo, map[string]string) {
 	ids := []struct {
 		id      string
 		context int64
@@ -111,11 +111,11 @@ func staticFallback(reg *region) ([]pluginkit.ModelInfo, map[string]string) {
 		{"kimi-k3", 260_000},
 		{"minimax-m2.7", 200_000},
 	}
-	out := make([]pluginkit.ModelInfo, 0, len(ids))
+	out := make([]cpakit.ModelInfo, 0, len(ids))
 	routes := make(map[string]string, len(ids))
 	for _, item := range ids {
 		routes[item.id] = item.id
-		out = append(out, pluginkit.ModelInfo{
+		out = append(out, cpakit.ModelInfo{
 			ID:                        item.id,
 			Object:                    "model",
 			OwnedBy:                   reg.displayName,
@@ -137,7 +137,7 @@ func staticFallback(reg *region) ([]pluginkit.ModelInfo, map[string]string) {
 // mustStaticRoutes is the StaticModels/RegisterModels shape of staticFallback:
 // those RPCs return only the roster, so the route map is folded back into the
 // ids (which are already the routing keys for the fallback list).
-func mustStaticRoutes(reg *region) []pluginkit.ModelInfo {
+func mustStaticRoutes(reg *region) []cpakit.ModelInfo {
 	models, _ := staticFallback(reg)
 	return models
 }

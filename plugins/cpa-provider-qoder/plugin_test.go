@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
-func init() { pluginkit.RegisterPlugin(newGateway()) }
+func init() { cpakit.RegisterPlugin(newGateway()) }
 
 // call drives one RPC exactly the way the host does and fails on an error
 // envelope, so a test asserts only on decoded results.
@@ -17,8 +17,8 @@ func call(t *testing.T, method string, request any) json.RawMessage {
 	if errMarshal != nil {
 		t.Fatalf("marshal request: %v", errMarshal)
 	}
-	out := pluginkit.HandleCall(method, raw)
-	var env pluginkit.Envelope
+	out := cpakit.HandleCall(method, raw)
+	var env cpakit.Envelope
 	if errUnmarshal := json.Unmarshal(out, &env); errUnmarshal != nil {
 		t.Fatalf("decode envelope for %s: %v (raw: %s)", method, errUnmarshal, out)
 	}
@@ -29,11 +29,11 @@ func call(t *testing.T, method string, request any) json.RawMessage {
 }
 
 func TestRegisterDeclaresExpectedCapabilities(t *testing.T) {
-	result := call(t, pluginkit.MethodPluginRegister, map[string]any{})
+	result := call(t, cpakit.MethodPluginRegister, map[string]any{})
 	var reg struct {
 		SchemaVersion uint32
-		Metadata      pluginkit.Metadata
-		Capabilities  pluginkit.Capabilities
+		Metadata      cpakit.Metadata
+		Capabilities  cpakit.Capabilities
 	}
 	if errUnmarshal := json.Unmarshal(result, &reg); errUnmarshal != nil {
 		t.Fatalf("decode registration: %v", errUnmarshal)
@@ -52,8 +52,8 @@ func TestRegisterDeclaresExpectedCapabilities(t *testing.T) {
 }
 
 func TestQuotaDescribeNamesThisProvider(t *testing.T) {
-	result := call(t, pluginkit.MethodQuotaDescribe, map[string]any{})
-	var desc pluginkit.QuotaDescribeResponse
+	result := call(t, cpakit.MethodQuotaDescribe, map[string]any{})
+	var desc cpakit.QuotaDescribeResponse
 	if errUnmarshal := json.Unmarshal(result, &desc); errUnmarshal != nil {
 		t.Fatalf("decode describe: %v", errUnmarshal)
 	}
@@ -63,12 +63,12 @@ func TestQuotaDescribeNamesThisProvider(t *testing.T) {
 }
 
 func TestAuthParseClaimsOwnTypeAndDeclinesOthers(t *testing.T) {
-	own := call(t, pluginkit.MethodAuthParse, pluginkit.AuthParseRequest{
+	own := call(t, cpakit.MethodAuthParse, cpakit.AuthParseRequest{
 		Provider: providerKey,
 		FileName: providerKey + ".json",
 		RawJSON:  []byte(`{"type":"` + providerKey + `","pat":"pat-test"}`),
 	})
-	var parsed pluginkit.AuthParseResponse
+	var parsed cpakit.AuthParseResponse
 	if errUnmarshal := json.Unmarshal(own, &parsed); errUnmarshal != nil {
 		t.Fatalf("decode parse: %v", errUnmarshal)
 	}
@@ -92,11 +92,11 @@ func TestAuthParseClaimsOwnTypeAndDeclinesOthers(t *testing.T) {
 		t.Fatal("the exchanged job token must not be persisted; it is short-lived")
 	}
 
-	other := call(t, pluginkit.MethodAuthParse, pluginkit.AuthParseRequest{
+	other := call(t, cpakit.MethodAuthParse, cpakit.AuthParseRequest{
 		Provider: "unrelated",
 		RawJSON:  []byte(`{"type":"unrelated"}`),
 	})
-	var declined pluginkit.AuthParseResponse
+	var declined cpakit.AuthParseResponse
 	if errUnmarshal := json.Unmarshal(other, &declined); errUnmarshal != nil {
 		t.Fatalf("decode parse: %v", errUnmarshal)
 	}
@@ -109,8 +109,8 @@ func TestAuthParseClaimsOwnTypeAndDeclinesOthers(t *testing.T) {
 // no credential, so per-account excluded models cannot be applied there and
 // would re-advertise models the user hid.
 func TestStaticModelsAreDeliberatelyEmpty(t *testing.T) {
-	result := call(t, pluginkit.MethodModelStatic, map[string]any{})
-	var resp pluginkit.ModelResponse
+	result := call(t, cpakit.MethodModelStatic, map[string]any{})
+	var resp cpakit.ModelResponse
 	if errUnmarshal := json.Unmarshal(result, &resp); errUnmarshal != nil {
 		t.Fatalf("decode static models: %v", errUnmarshal)
 	}
@@ -123,11 +123,11 @@ func TestStaticModelsAreDeliberatelyEmpty(t *testing.T) {
 }
 func TestManagementStatusIsSelfDescribing(t *testing.T) {
 	// The route is registered under the plugin id, matching the library name.
-	result := call(t, pluginkit.MethodManagementHandle, pluginkit.ManagementRequest{
+	result := call(t, cpakit.MethodManagementHandle, cpakit.ManagementRequest{
 		Method: "GET",
 		Path:   "plugins/cpa-provider-qoder/status",
 	})
-	var response pluginkit.ManagementResponse
+	var response cpakit.ManagementResponse
 	if errUnmarshal := json.Unmarshal(result, &response); errUnmarshal != nil {
 		t.Fatalf("decode management response: %v", errUnmarshal)
 	}
@@ -152,8 +152,8 @@ func TestManagementStatusIsSelfDescribing(t *testing.T) {
 }
 
 func TestUnknownMethodIsReportedNotPanicked(t *testing.T) {
-	out := pluginkit.HandleCall("no.such.method", []byte(`{}`))
-	var env pluginkit.Envelope
+	out := cpakit.HandleCall("no.such.method", []byte(`{}`))
+	var env cpakit.Envelope
 	if errUnmarshal := json.Unmarshal(out, &env); errUnmarshal != nil {
 		t.Fatalf("decode envelope: %v", errUnmarshal)
 	}
@@ -184,8 +184,8 @@ func TestCodecRoundTrip(t *testing.T) {
 // provider that only read userQuota would report zero while the account holds
 // credit.
 func TestFetchQuotaRequiresACredential(t *testing.T) {
-	out := pluginkit.HandleCall(pluginkit.MethodQuotaFetch, []byte(`{"auth_index":"missing"}`))
-	var env pluginkit.Envelope
+	out := cpakit.HandleCall(cpakit.MethodQuotaFetch, []byte(`{"auth_index":"missing"}`))
+	var env cpakit.Envelope
 	if errUnmarshal := json.Unmarshal(out, &env); errUnmarshal != nil {
 		t.Fatalf("decode envelope: %v", errUnmarshal)
 	}

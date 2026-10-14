@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 const (
@@ -19,22 +19,22 @@ const (
 //
 // The upstream only speaks streaming, so this buffers the stream and returns the
 // final assistant message as one chat completion.
-func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
+func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
 	routeKey := g.impl.routeKey(req.Model)
 	body, model, errPrepare := prepareChatBody(req, identity, routeKey, g.impl.limitsFor(req.Model))
 	if errPrepare != nil {
-		return pluginkit.ExecutorResponse{}, errPrepare
+		return cpakit.ExecutorResponse{}, errPrepare
 	}
 	chunks, errCall := g.impl.callChat(ctx, req.StorageJSON, body, model)
 	if errCall != nil {
-		return pluginkit.ExecutorResponse{}, errCall
+		return cpakit.ExecutorResponse{}, errCall
 	}
 	aggregated, errAggregate := aggregateChunks(chunks, model)
 	if errAggregate != nil {
-		return pluginkit.ExecutorResponse{}, errAggregate
+		return cpakit.ExecutorResponse{}, errAggregate
 	}
-	return pluginkit.ExecutorResponse{
+	return cpakit.ExecutorResponse{
 		Payload: aggregated,
 		Headers: http.Header{"Content-Type": []string{"application/json"}},
 	}, nil
@@ -45,46 +45,36 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 // Chunks are bare JSON. The host wraps each one as "data: <chunk>" and appends
 // its own [DONE]; adding either here would double the framing and end the
 // client's stream twice.
-func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
+func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest, streamID string) (cpakit.ExecutorStreamResponse, error) {
 	identity := newTurnIdentity(g.impl.identityUID(req.StorageJSON), requestSession(req))
 	routeKey := g.impl.routeKey(req.Model)
 	body, model, errPrepare := prepareChatBody(req, identity, routeKey, g.impl.limitsFor(req.Model))
 	if errPrepare != nil {
-		return pluginkit.ExecutorStreamResponse{}, errPrepare
+		return cpakit.ExecutorStreamResponse{}, errPrepare
 	}
 	chunks, errCall := g.impl.callChat(ctx, req.StorageJSON, body, model)
 	if errCall != nil {
-		return pluginkit.ExecutorStreamResponse{}, errCall
+		return cpakit.ExecutorStreamResponse{}, errCall
 	}
-	payloads := make([]pluginkit.ExecutorStreamChunk, 0, len(chunks))
-	for _, chunk := range chunks {
-		payloads = append(payloads, pluginkit.ExecutorStreamChunk{Payload: []byte(chunk)})
-	}
-	return pluginkit.ExecutorStreamResponse{
-		Headers: http.Header{
-			"Content-Type":  []string{"text/event-stream"},
-			"Cache-Control": []string{"no-cache"},
-		},
-		Chunks: payloads,
-	}, nil
+	return cpakit.BufferedStream(cpakit.StreamHeaders(), cpakit.SSEFromStrings(chunks)), nil
 }
 
 // CountTokens is not offered by the upstream; the host falls back to its own
 // estimator.
-func (g *gateway) CountTokens(context.Context, pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
-	return pluginkit.ExecutorResponse{}, pluginkit.ErrUnhandled
+func (g *gateway) CountTokens(context.Context, cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
+	return cpakit.ExecutorResponse{}, cpakit.ErrUnhandled
 }
 
 // HttpRequest exposes raw HTTP bridging for diagnostics.
 //
 // The COSY face signs the URL, so a request aimed at it is signed here; anything
 // else uses the plain bearer, which is what the openapi face expects.
-func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPRequest) (pluginkit.ExecutorHTTPResponse, error) {
+func (g *gateway) HttpRequest(ctx context.Context, req cpakit.ExecutorHTTPRequest) (cpakit.ExecutorHTTPResponse, error) {
 	creds, errCreds := g.impl.resolveCredentials(ctx, req.StorageJSON)
 	if errCreds != nil {
-		return pluginkit.ExecutorHTTPResponse{}, errCreds
+		return cpakit.ExecutorHTTPResponse{}, errCreds
 	}
-	var result *pluginkit.HTTPResult
+	var result *cpakit.HTTPResult
 	var errDo error
 	if strings.Contains(req.URL, "/algo") {
 		result, errDo = signedRequest(ctx, creds.Region, req.Method, req.URL, creds.Identity, req.Body, req.Headers)
@@ -95,12 +85,12 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 		} else if headers.Get("Authorization") == "" {
 			headers.Set("Authorization", "Bearer "+creds.Identity.AuthToken)
 		}
-		result, errDo = pluginkit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
+		result, errDo = cpakit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
 	}
 	if errDo != nil {
-		return pluginkit.ExecutorHTTPResponse{}, errDo
+		return cpakit.ExecutorHTTPResponse{}, errDo
 	}
-	return pluginkit.ExecutorHTTPResponse{StatusCode: result.StatusCode, Headers: result.Header, Body: result.Body}, nil
+	return cpakit.ExecutorHTTPResponse{StatusCode: result.StatusCode, Headers: result.Header, Body: result.Body}, nil
 }
 
 // prepareChatBody normalises a client chat request into the upstream's dialect
@@ -121,17 +111,17 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 //
 // The body also carries the attribution fields the official client sends: they
 // are optional for billing but required for the vendor's statistics views.
-func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, routeKey string, limits modelLimits) ([]byte, string, error) {
+func prepareChatBody(req cpakit.ExecutorRequest, identity turnIdentity, routeKey string, limits modelLimits) ([]byte, string, error) {
 	raw := req.Payload
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = req.OriginalRequest
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil, "", pluginkit.BadRequestError("no request body was provided to the executor")
+		return nil, "", cpakit.BadRequestError("no request body was provided to the executor")
 	}
 	var document map[string]any
 	if errUnmarshal := json.Unmarshal(raw, &document); errUnmarshal != nil {
-		return nil, "", pluginkit.BadRequestError("decode chat request: " + errUnmarshal.Error())
+		return nil, "", cpakit.BadRequestError("decode chat request: " + errUnmarshal.Error())
 	}
 
 	model := strings.TrimSpace(req.Model)
@@ -141,7 +131,7 @@ func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, route
 		}
 	}
 	if model == "" {
-		return nil, "", pluginkit.BadRequestError("the chat request does not name a model")
+		return nil, "", cpakit.BadRequestError("the chat request does not name a model")
 	}
 	// Routing reads the X-Model-Key header, so the body and the header must
 	// agree. The advertised id is the display name; the gateway needs the
@@ -184,7 +174,7 @@ func prepareChatBody(req pluginkit.ExecutorRequest, identity turnIdentity, route
 
 	encoded, errMarshal := json.Marshal(document)
 	if errMarshal != nil {
-		return nil, "", pluginkit.NewError("internal_error", errMarshal.Error())
+		return nil, "", cpakit.NewError("internal_error", errMarshal.Error())
 	}
 	return encoded, model, nil
 }
@@ -290,7 +280,7 @@ func aggregateChunks(chunks []string, model string) ([]byte, error) {
 		}
 	}
 	if !sawChunk {
-		return nil, pluginkit.NewError("upstream_error", "Qoder returned no stream events", http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_error", "Qoder returned no stream events", http.StatusBadGateway)
 	}
 
 	message := map[string]any{"role": "assistant", "content": content.String()}
