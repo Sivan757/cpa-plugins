@@ -25,6 +25,14 @@ const (
 // idAlphabet is the base62 alphabet OpenCode uses for identifier suffixes.
 const idAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
+// idCounterRange bounds the identifier's counter field.
+//
+// The counter occupies the low twelve bits of the value before the complement,
+// and the free tier rejects any identifier whose counter exceeds 63: measured
+// against the live endpoint, counters 0..63 answer 200 and 64..4095 answer 403
+// with FreeTierError. Drawing a wider range makes most identifiers unusable.
+const idCounterRange = 64
+
 // sessionKeep bounds the session-id map. Zen meters free usage per session and
 // caches its prompt prefix by that id, so one client conversation must reuse
 // the id it was first given.
@@ -66,15 +74,25 @@ func (s *sessionStore) requestID() string { return opencodeID("msg", false) }
 // fourteen base62 characters. Zen decodes the timestamp prefix, so a
 // digest-shaped value is refused even when every header is otherwise correct.
 func opencodeID(prefix string, descending bool) string {
-	value := uint64(time.Now().UnixMilli())*4096 + uint64(rand.Intn(0x1000)+1)
+	return opencodeIDAt(prefix, descending, time.Now().UnixMilli())
+}
+
+// opencodeIDAt mints an identifier for an explicit millisecond clock reading, so
+// the format can be pinned against an independent implementation in a test.
+//
+// The twelve leading hex digits are the LOW six bytes of the 64-bit value
+// (millisecond * 4096 + counter), most significant byte first, bit-inverted for
+// a descending identifier. Extracting the high bytes instead is a live 403.
+func opencodeIDAt(prefix string, descending bool, millis int64) string {
+	value := uint64(millis)*4096 + uint64(rand.Intn(idCounterRange))
 	if descending {
 		value = ^value
 	}
 	var builder strings.Builder
 	builder.WriteString(prefix)
 	builder.WriteByte('_')
-	for index := 0; index < 6; index++ {
-		builder.WriteString(padHex(byte(value >> uint(40-8*index))))
+	for index := 5; index >= 0; index-- {
+		builder.WriteString(padHex(byte(value >> uint(8*index))))
 	}
 	for index := 0; index < 14; index++ {
 		builder.WriteByte(idAlphabet[rand.Intn(len(idAlphabet))])

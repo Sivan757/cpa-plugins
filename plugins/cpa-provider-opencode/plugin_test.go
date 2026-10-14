@@ -1,100 +1,14 @@
+// Helpers and tests for the plugin's request handling. The identifier format
+// is pinned separately in identity_test.go.
 package main
 
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/sivan/cpa-plugins/internal/pluginkit"
 )
-
-// TestOpencodeIDShape pins the identifier format the free tier decodes: a
-// prefix, twelve lowercase hex digits, then fourteen base62 characters.
-func TestOpencodeIDShape(t *testing.T) {
-	id := opencodeID("ses", true)
-	if !strings.HasPrefix(id, "ses_") {
-		t.Fatalf("identifier %q is missing the ses_ prefix", id)
-	}
-	body := strings.TrimPrefix(id, "ses_")
-	if len(body) != 26 {
-		t.Fatalf("identifier body length = %d, want 26", len(body))
-	}
-	for index, char := range body[:12] {
-		if !strings.ContainsRune("0123456789abcdef", char) {
-			t.Fatalf("timestamp digit %d of %q is not lowercase hex", index, id)
-		}
-	}
-	for _, char := range body[12:] {
-		if !strings.ContainsRune(idAlphabet, char) {
-			t.Fatalf("suffix character %q of %q is not base62", char, id)
-		}
-	}
-}
-
-// TestOpencodeIDTimestampIsCurrent pins the prefix against an independent
-// computation from the same clock reading, and proves the digits change as the
-// clock advances.
-func TestOpencodeIDTimestampIsCurrent(t *testing.T) {
-	var lower, upper string
-	for index := 0; index < 64; index++ {
-		millis := uint64(time.Now().UnixMilli())
-		id := opencodeID("msg", false)
-		prefix := strings.TrimPrefix(id, "msg_")[:12]
-		parsed, errParse := strconv.ParseUint(prefix, 16, 64)
-		if errParse != nil {
-			t.Fatalf("decode prefix %q: %v", prefix, errParse)
-		}
-		// The counter is 1..4096, so the delta from the bare timestamp is small.
-		delta := (parsed - (millis*4096)&0xFFFFFFFFFFFF) & 0xFFFFFFFFFFFF
-		if delta > 4096 && delta < 0xFFFFFFFFFFFF-4096 {
-			t.Fatalf("prefix %s is not within one counter tick of the current time", prefix)
-		}
-		lower = prefix
-	}
-	for index := 0; index < 8; index++ {
-		time.Sleep(time.Millisecond)
-		upper = strings.TrimPrefix(opencodeID("msg", false), "msg_")[:12]
-	}
-	if lower == upper {
-		t.Log("prefix did not change across clock readings; the counter guarantees it does not need to")
-	}
-}
-
-// TestOpencodeIDDescendingMatchesFormula pins the complemented form the session
-// identifier uses.
-func TestOpencodeIDDescendingMatchesFormula(t *testing.T) {
-	id := opencodeID("ses", true)
-	prefix := strings.TrimPrefix(id, "ses_")[:12]
-	parsed, errParse := strconv.ParseUint(prefix, 16, 64)
-	if errParse != nil {
-		t.Fatalf("decode prefix %q: %v", prefix, errParse)
-	}
-	// A descending id is the complement of the ascending value, so the decoded
-	// value must be the complement of something within one tick of now.
-	millis := uint64(time.Now().UnixMilli())
-	ascending := (^parsed) & 0xFFFFFFFFFFFF
-	delta := (ascending - (millis*4096)&0xFFFFFFFFFFFF) & 0xFFFFFFFFFFFF
-	if delta > 4096 && delta < 0xFFFFFFFFFFFF-4096 {
-		t.Fatalf("complemented prefix %s is not within one counter tick of now", prefix)
-	}
-}
-
-// TestSessionIDIsStable pins the reuse rule: Zen meters free usage per session
-// and caches by that id, so one conversation must keep one identifier.
-func TestSessionIDIsStable(t *testing.T) {
-	store := newSessionStore()
-	first := store.id("conversation")
-	second := store.id("conversation")
-	if first != second {
-		t.Fatalf("session id changed between calls: %q then %q", first, second)
-	}
-	if other := store.id("other"); other == first {
-		t.Fatalf("distinct conversations share the session id %q", other)
-	}
-}
 
 // TestEnsureRequiredTools pins the free-tier shape rule: bash and read must be
 // present by name, an already-qualifying list must not be rewritten, and the
