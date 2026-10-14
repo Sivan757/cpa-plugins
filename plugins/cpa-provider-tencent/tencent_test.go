@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
-func init() { pluginkit.RegisterPlugin(newGateway()) }
+func init() { cpakit.RegisterPlugin(newGateway()) }
 
 // call drives one RPC exactly the way the host does and fails on an error
 // envelope, so a test asserts only on decoded results.
@@ -19,8 +19,8 @@ func call(t *testing.T, method string, request any) json.RawMessage {
 	if errMarshal != nil {
 		t.Fatalf("marshal request: %v", errMarshal)
 	}
-	out := pluginkit.HandleCall(method, raw)
-	var env pluginkit.Envelope
+	out := cpakit.HandleCall(method, raw)
+	var env cpakit.Envelope
 	if errUnmarshal := json.Unmarshal(out, &env); errUnmarshal != nil {
 		t.Fatalf("decode envelope for %s: %v (raw: %s)", method, errUnmarshal, out)
 	}
@@ -34,10 +34,10 @@ func call(t *testing.T, method string, request any) json.RawMessage {
 // families behind a single provider key, which is why overlapping model ids no
 // longer compete across plugins.
 func TestRegisterDeclaresOneProviderKey(t *testing.T) {
-	result := call(t, pluginkit.MethodPluginRegister, map[string]any{})
+	result := call(t, cpakit.MethodPluginRegister, map[string]any{})
 	var reg struct {
-		Metadata     pluginkit.Metadata
-		Capabilities pluginkit.Capabilities
+		Metadata     cpakit.Metadata
+		Capabilities cpakit.Capabilities
 	}
 	if errUnmarshal := json.Unmarshal(result, &reg); errUnmarshal != nil {
 		t.Fatalf("decode registration: %v", errUnmarshal)
@@ -53,8 +53,8 @@ func TestRegisterDeclaresOneProviderKey(t *testing.T) {
 // TestQuotaDescribeNamesTheMergedKey checks that quota is registered under the
 // single provider key rather than one per credential family.
 func TestQuotaDescribeNamesTheMergedKey(t *testing.T) {
-	result := call(t, pluginkit.MethodQuotaDescribe, map[string]any{})
-	var desc pluginkit.QuotaDescribeResponse
+	result := call(t, cpakit.MethodQuotaDescribe, map[string]any{})
+	var desc cpakit.QuotaDescribeResponse
 	if errUnmarshal := json.Unmarshal(result, &desc); errUnmarshal != nil {
 		t.Fatalf("decode describe: %v", errUnmarshal)
 	}
@@ -66,12 +66,12 @@ func TestQuotaDescribeNamesTheMergedKey(t *testing.T) {
 // TestAuthParseClaimsEveryKindAndDeclinesOthers walks each credential family.
 func TestAuthParseClaimsEveryKindAndDeclinesOthers(t *testing.T) {
 	for _, id := range kindOrder {
-		own := call(t, pluginkit.MethodAuthParse, pluginkit.AuthParseRequest{
+		own := call(t, cpakit.MethodAuthParse, cpakit.AuthParseRequest{
 			Provider: providerKey,
 			FileName: providerKey + "-" + id + ".json",
 			RawJSON:  []byte(`{"type":"` + providerKey + `","kind":"` + id + `"}`),
 		})
-		var parsed pluginkit.AuthParseResponse
+		var parsed cpakit.AuthParseResponse
 		if errUnmarshal := json.Unmarshal(own, &parsed); errUnmarshal != nil {
 			t.Fatalf("decode parse for %s: %v", id, errUnmarshal)
 		}
@@ -91,11 +91,11 @@ func TestAuthParseClaimsEveryKindAndDeclinesOthers(t *testing.T) {
 		}
 	}
 
-	other := call(t, pluginkit.MethodAuthParse, pluginkit.AuthParseRequest{
+	other := call(t, cpakit.MethodAuthParse, cpakit.AuthParseRequest{
 		Provider: "unrelated",
 		RawJSON:  []byte(`{"type":"unrelated"}`),
 	})
-	var declined pluginkit.AuthParseResponse
+	var declined cpakit.AuthParseResponse
 	if errUnmarshal := json.Unmarshal(other, &declined); errUnmarshal != nil {
 		t.Fatalf("decode parse: %v", errUnmarshal)
 	}
@@ -124,8 +124,8 @@ func TestKindsCoverDistinctUpstreams(t *testing.T) {
 // TestUnknownMethodIsReportedNotPanicked checks the C ABI boundary: a panic
 // escaping into C would abort the whole host process.
 func TestUnknownMethodIsReportedNotPanicked(t *testing.T) {
-	out := pluginkit.HandleCall("no.such.method", []byte(`{}`))
-	var env pluginkit.Envelope
+	out := cpakit.HandleCall("no.such.method", []byte(`{}`))
+	var env cpakit.Envelope
 	if errUnmarshal := json.Unmarshal(out, &env); errUnmarshal != nil {
 		t.Fatalf("decode envelope: %v", errUnmarshal)
 	}
@@ -136,11 +136,11 @@ func TestUnknownMethodIsReportedNotPanicked(t *testing.T) {
 
 // TestManagementStatusListsEveryKind checks the diagnostic surface.
 func TestManagementStatusListsEveryKind(t *testing.T) {
-	result := call(t, pluginkit.MethodManagementHandle, pluginkit.ManagementRequest{
+	result := call(t, cpakit.MethodManagementHandle, cpakit.ManagementRequest{
 		Method: "GET",
 		Path:   "plugins/cpa-provider-tencent/status",
 	})
-	var response pluginkit.ManagementResponse
+	var response cpakit.ManagementResponse
 	if errUnmarshal := json.Unmarshal(result, &response); errUnmarshal != nil {
 		t.Fatalf("decode management response: %v", errUnmarshal)
 	}
@@ -208,14 +208,14 @@ func TestPrepareBodyGlobalRules(t *testing.T) {
 // TestSplitSSEEmitsBareJSONChunks guards the framing contract with the host.
 func TestSplitSSEEmitsBareJSONChunks(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n\n"
-	chunks := splitSSE([]byte(body))
+	chunks := cpakit.SplitSSE([]byte(body))
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 data chunk (no synthetic DONE), got %d", len(chunks))
 	}
-	if strings.HasPrefix(string(chunks[0].Payload), "data:") {
-		t.Fatalf("chunk must not carry an SSE prefix: %q", chunks[0].Payload)
+	if strings.HasPrefix(string(chunks[0]), "data:") {
+		t.Fatalf("chunk must not carry an SSE prefix: %q", chunks[0])
 	}
-	if strings.Contains(string(chunks[0].Payload), "[DONE]") {
+	if strings.Contains(string(chunks[0]), "[DONE]") {
 		t.Fatal("the host appends DONE itself")
 	}
 }
@@ -225,8 +225,8 @@ func TestSplitSSEEmitsBareJSONChunks(t *testing.T) {
 // credential. ModelsForAuth is the per-credential surface and is covered by
 // the kind routing tests.
 func TestStaticModelsAreUsable(t *testing.T) {
-	result := call(t, pluginkit.MethodModelStatic, map[string]any{})
-	var resp pluginkit.ModelResponse
+	result := call(t, cpakit.MethodModelStatic, map[string]any{})
+	var resp cpakit.ModelResponse
 	if errUnmarshal := json.Unmarshal(result, &resp); errUnmarshal != nil {
 		t.Fatalf("decode static models: %v", errUnmarshal)
 	}
@@ -250,12 +250,12 @@ func TestStaticModelsAreUsable(t *testing.T) {
 // under this provider is not claimed and rewritten to a default: it would
 // otherwise execute against the wrong upstream.
 func TestAuthParseDeclinesUnknownKind(t *testing.T) {
-	unknown := call(t, pluginkit.MethodAuthParse, pluginkit.AuthParseRequest{
+	unknown := call(t, cpakit.MethodAuthParse, cpakit.AuthParseRequest{
 		Provider: providerKey,
 		FileName: "mystery.json",
 		RawJSON:  []byte(`{"type":"tencent","kind":"mystery"}`),
 	})
-	var parsed pluginkit.AuthParseResponse
+	var parsed cpakit.AuthParseResponse
 	if errUnmarshal := json.Unmarshal(unknown, &parsed); errUnmarshal != nil {
 		t.Fatalf("decode parse: %v", errUnmarshal)
 	}

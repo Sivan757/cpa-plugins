@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // errBodyLimit caps how much of a non-2xx upstream body is read before the
@@ -26,7 +26,7 @@ const errBodyLimit = 1 << 20
 //
 // A 2xx response is returned still streaming. The caller owns it and must Close
 // it.
-func (p *pluginState) openChatStream(ctx context.Context, callback pluginkit.HostCallback, kind *credentialKind, creds *credentials, extra []*credentials, body []byte) (*pluginkit.HTTPStream, error) {
+func (p *pluginState) openChatStream(ctx context.Context, callback cpakit.HostCallback, kind *credentialKind, creds *credentials, extra []*credentials, body []byte) (*cpakit.HTTPStream, error) {
 	candidates := append([]*credentials{creds}, extra...)
 	ordered := p.rotator.ordered(dedupeCredentials(candidates))
 	endpoint := creds.chatURL(kind)
@@ -36,10 +36,10 @@ func (p *pluginState) openChatStream(ctx context.Context, callback pluginkit.Hos
 		stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, endpoint, p.chatHeadersFor(kind, cred), body)
 		if errOpen != nil {
 			if last {
-				return nil, pluginkit.NewError("upstream_unavailable", "chat request failed: "+errOpen.Error(), http.StatusBadGateway)
+				return nil, cpakit.NewError("upstream_unavailable", "chat request failed: "+errOpen.Error(), http.StatusBadGateway)
 			}
 			p.rotator.penalize(cred)
-			pluginkit.HostLog(ctx, "warn", "tencent: stream candidate failed at the network layer; trying the next key")
+			cpakit.HostLog(ctx, "warn", "tencent: stream candidate failed at the network layer; trying the next key")
 			continue
 		}
 		if stream.StatusCode >= 200 && stream.StatusCode < 300 {
@@ -52,21 +52,21 @@ func (p *pluginState) openChatStream(ctx context.Context, callback pluginkit.Hos
 		status := stream.StatusCode
 		stream.Close()
 		if errRead != nil {
-			return nil, pluginkit.NewError("upstream_unavailable", "chat request failed: "+errRead.Error(), http.StatusBadGateway)
+			return nil, cpakit.NewError("upstream_unavailable", "chat request failed: "+errRead.Error(), http.StatusBadGateway)
 		}
 		if !last && shouldRotateCredential(status) {
 			p.rotator.penalize(cred)
-			pluginkit.HostLog(ctx, "warn", "tencent: stream candidate rejected; trying the next key")
+			cpakit.HostLog(ctx, "warn", "tencent: stream candidate rejected; trying the next key")
 			continue
 		}
 		return nil, classifyUpstreamError(status, raw)
 	}
-	return nil, pluginkit.NewError("upstream_unavailable", "every credential candidate failed", http.StatusBadGateway)
+	return nil, cpakit.NewError("upstream_unavailable", "every credential candidate failed", http.StatusBadGateway)
 }
 
 // readStreamBody drains a stream into memory, for the finite bodies that carry
 // an error or a non-streaming answer.
-func readStreamBody(stream *pluginkit.HTTPStream) ([]byte, error) {
+func readStreamBody(stream *cpakit.HTTPStream) ([]byte, error) {
 	var out bytes.Buffer
 	for {
 		chunk, done, errRead := stream.Read()
@@ -173,7 +173,7 @@ func sseEventPayload(event []byte) []byte {
 // This is the whole point of the async path: emitting on arrival preserves the
 // upstream's timing, where buffering the body and slicing it afterwards makes
 // every chunk reach the client in one burst.
-func forwardStream(callback pluginkit.HostCallback, streamID string, stream *pluginkit.HTTPStream) error {
+func forwardStream(callback cpakit.HostCallback, streamID string, stream *cpakit.HTTPStream) error {
 	forwarder := &sseForwarder{}
 	emitted := false
 	for {

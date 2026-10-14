@@ -8,31 +8,31 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // Execute performs a non-streaming chat completion.
 //
 // The upstream only speaks streaming, so this buffers the stream and returns
 // the final assistant message as one OpenAI chat completion.
-func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
+func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
 	kind, creds, errCreds := g.impl.resolveFor(ctx, req)
 	if errCreds != nil {
-		return pluginkit.ExecutorResponse{}, errCreds
+		return cpakit.ExecutorResponse{}, errCreds
 	}
 	body, errPrepare := g.impl.prepareBody(kind, req.Payload, req.OriginalRequest)
 	if errPrepare != nil {
-		return pluginkit.ExecutorResponse{}, errPrepare
+		return cpakit.ExecutorResponse{}, errPrepare
 	}
 	result, errCall := g.impl.callChat(ctx, kind, creds, nil, body)
 	if errCall != nil {
-		return pluginkit.ExecutorResponse{}, errCall
+		return cpakit.ExecutorResponse{}, errCall
 	}
-	aggregated, errAggregate := aggregateStream(result.Body)
+	aggregated, errAggregate := cpakit.AggregateStream(result.Body)
 	if errAggregate != nil {
-		return pluginkit.ExecutorResponse{}, errAggregate
+		return cpakit.ExecutorResponse{}, errAggregate
 	}
-	return pluginkit.ExecutorResponse{
+	return cpakit.ExecutorResponse{
 		Payload: aggregated,
 		Headers: http.Header{"Content-Type": []string{"application/json"}},
 	}, nil
@@ -56,48 +56,44 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 // and forwarding on a goroutine via the host stream (so timing survives). The
 // host holds the callbacks open until the stream closes, so returning early is
 // safe.
-func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
+func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest, streamID string, hostCallbackID string) (cpakit.ExecutorStreamResponse, error) {
 	kind, creds, errCreds := g.impl.resolveFor(ctx, req)
 	if errCreds != nil {
-		return pluginkit.ExecutorStreamResponse{}, errCreds
+		return cpakit.ExecutorStreamResponse{}, errCreds
 	}
 	body, errPrepare := g.impl.prepareBody(kind, req.Payload, req.OriginalRequest)
 	if errPrepare != nil {
-		return pluginkit.ExecutorStreamResponse{}, errPrepare
+		return cpakit.ExecutorStreamResponse{}, errPrepare
 	}
 
-	streamID := strings.TrimSpace(req.StreamID)
 	// Without a host stream there is nowhere to emit progressively, so fall back
 	// to the buffered reply rather than dropping output.
-	if streamID == "" || !pluginkit.HostAvailable() {
+	if strings.TrimSpace(streamID) == "" {
 		result, errCall := g.impl.callChat(ctx, kind, creds, nil, body)
 		if errCall != nil {
-			return pluginkit.ExecutorStreamResponse{}, errCall
+			return cpakit.ExecutorStreamResponse{}, errCall
 		}
-		return pluginkit.ExecutorStreamResponse{
-			Headers: streamHeaders(),
-			Chunks:  splitSSE(result.Body),
-		}, nil
+		return cpakit.BufferedStream(cpakit.StreamHeaders(), cpakit.SplitSSE(result.Body)), nil
 	}
 
 	// Opening here rather than in the goroutine is what keeps a rejected head
 	// visible to the host's credential rotation and scoped-error rules.
-	stream, errOpen := g.impl.openChatStream(ctx, pluginkit.NewHostCallback(req.HostCallbackID), kind, creds, nil, body)
+	callback := cpakit.NewHostCallback(hostCallbackID)
+	stream, errOpen := g.impl.openChatStream(ctx, callback, kind, creds, nil, body)
 	if errOpen != nil {
-		return pluginkit.ExecutorStreamResponse{}, errOpen
+		return cpakit.ExecutorStreamResponse{}, errOpen
 	}
 
-	callback := pluginkit.NewHostCallback(req.HostCallbackID)
 	go func() {
 		defer stream.Close()
-		if errForward := forwardStream(callback, streamID, stream); errForward != nil {
-			callback.CloseStream(streamID, errForward.Error())
+		if errForward := cpakit.ForwardStream(callback, streamID, stream); errForward != nil {
+			callback.CloseStream(streamID, cpakit.Redact(errForward.Error()))
 			return
 		}
 		callback.CloseStream(streamID, "")
 	}()
 
-	return pluginkit.ExecutorStreamResponse{Headers: streamHeaders()}, nil
+	return cpakit.ExecutorStreamResponse{Headers: cpakit.StreamHeaders()}, nil
 }
 
 // streamHeaders is the header set every streamed reply carries.
@@ -110,16 +106,16 @@ func streamHeaders() http.Header {
 
 // CountTokens is not offered by the upstream; the host falls back to its own
 // estimator.
-func (g *gateway) CountTokens(context.Context, pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
-	return pluginkit.ExecutorResponse{}, pluginkit.ErrUnhandled
+func (g *gateway) CountTokens(context.Context, cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
+	return cpakit.ExecutorResponse{}, cpakit.ErrUnhandled
 }
 
 // HttpRequest exposes raw HTTP bridging for diagnostics.
-func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPRequest) (pluginkit.ExecutorHTTPResponse, error) {
+func (g *gateway) HttpRequest(ctx context.Context, req cpakit.ExecutorHTTPRequest) (cpakit.ExecutorHTTPResponse, error) {
 	kind := kindForRecord(req.StorageJSON, req.Attributes)
 	creds, errCreds := g.impl.resolve(ctx, kind)
 	if errCreds != nil {
-		return pluginkit.ExecutorHTTPResponse{}, errCreds
+		return cpakit.ExecutorHTTPResponse{}, errCreds
 	}
 	headers := req.Headers
 	if headers == nil {
@@ -130,11 +126,11 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 	} else {
 		headers.Set("Authorization", "Bearer "+creds.AccessToken)
 	}
-	result, errDo := pluginkit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
+	result, errDo := cpakit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
 	if errDo != nil {
-		return pluginkit.ExecutorHTTPResponse{}, errDo
+		return cpakit.ExecutorHTTPResponse{}, errDo
 	}
-	return pluginkit.ExecutorHTTPResponse{StatusCode: result.StatusCode, Headers: result.Header, Body: result.Body}, nil
+	return cpakit.ExecutorHTTPResponse{StatusCode: result.StatusCode, Headers: result.Header, Body: result.Body}, nil
 }
 
 // resolveFor picks the credential an executor request should use. The request
@@ -142,7 +138,7 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 // desktop CN credential, which is the long-standing default. For the CodeBuddy
 // kind the candidates are reordered by the key rotator so multiple API keys
 // rotate on 401/403/429/5xx.
-func (p *pluginState) resolveFor(ctx context.Context, req pluginkit.ExecutorRequest) (*credentialKind, *credentials, error) {
+func (p *pluginState) resolveFor(ctx context.Context, req cpakit.ExecutorRequest) (*credentialKind, *credentials, error) {
 	kind := kindForRecord(req.StorageJSON, req.AuthAttributes)
 	if kind.id != kindCodebuddyID {
 		creds, errCreds := p.resolve(ctx, kind)
@@ -169,11 +165,11 @@ func (p *pluginState) prepareBody(kind *credentialKind, payload, original []byte
 		raw = original
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil, pluginkit.BadRequestError("no request body was provided to the executor")
+		return nil, cpakit.BadRequestError("no request body was provided to the executor")
 	}
 	var doc map[string]any
 	if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal != nil {
-		return nil, pluginkit.BadRequestError("decode chat request: " + errUnmarshal.Error())
+		return nil, cpakit.BadRequestError("decode chat request: " + errUnmarshal.Error())
 	}
 
 	if messages, ok := doc["messages"].([]any); ok {
@@ -226,7 +222,7 @@ func (p *pluginState) prepareBody(kind *credentialKind, payload, original []byte
 
 	encoded, errMarshal := json.Marshal(doc)
 	if errMarshal != nil {
-		return nil, pluginkit.NewError("internal_error", errMarshal.Error())
+		return nil, cpakit.NewError("internal_error", errMarshal.Error())
 	}
 	return encoded, nil
 }
@@ -282,12 +278,12 @@ func flattenToolChoice(value any) (string, bool) {
 // say "this key cannot serve the request" (401/403/429/5xx) and on network
 // errors; a business rejection is returned as-is, and the last candidate's
 // failure is never retried.
-func (p *pluginState) callChat(ctx context.Context, kind *credentialKind, creds *credentials, extra []*credentials, body []byte) (*pluginkit.HTTPResult, error) {
+func (p *pluginState) callChat(ctx context.Context, kind *credentialKind, creds *credentials, extra []*credentials, body []byte) (*cpakit.HTTPResult, error) {
 	if kind.id != kindCodebuddyID || (len(extra) <= 1 && creds.Mode != string(modeAPIKey)) {
 		headers := p.chatHeadersFor(kind, creds)
-		result, errDo := pluginkit.HTTPDo(ctx, http.MethodPost, creds.chatURL(kind), headers, body)
+		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, creds.chatURL(kind), headers, body)
 		if errDo != nil {
-			return nil, pluginkit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
+			return nil, cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
 		}
 		if result.StatusCode < 200 || result.StatusCode >= 300 {
 			return nil, classifyUpstreamError(result.StatusCode, result.Body)
@@ -300,13 +296,13 @@ func (p *pluginState) callChat(ctx context.Context, kind *credentialKind, creds 
 	endpoint := creds.chatURL(kind)
 	for index, cred := range ordered {
 		last := index == len(ordered)-1
-		result, errDo := pluginkit.HTTPDo(ctx, http.MethodPost, endpoint, codebuddyChatHeaders(cred), body)
+		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, endpoint, codebuddyChatHeaders(cred), body)
 		if errDo != nil {
 			if last {
-				return nil, pluginkit.NewError("upstream_unavailable", "chat request failed: "+errDo.Error(), http.StatusBadGateway)
+				return nil, cpakit.NewError("upstream_unavailable", "chat request failed: "+errDo.Error(), http.StatusBadGateway)
 			}
 			p.rotator.penalize(cred)
-			pluginkit.HostLog(ctx, "warn", "tencent: chat candidate failed at the network layer; trying the next key")
+			cpakit.HostLog(ctx, "warn", "tencent: chat candidate failed at the network layer; trying the next key")
 			continue
 		}
 		if result.StatusCode >= 200 && result.StatusCode < 300 {
@@ -314,12 +310,12 @@ func (p *pluginState) callChat(ctx context.Context, kind *credentialKind, creds 
 		}
 		if !last && shouldRotateCredential(result.StatusCode) {
 			p.rotator.penalize(cred)
-			pluginkit.HostLog(ctx, "warn", "tencent: chat candidate rejected; trying the next key")
+			cpakit.HostLog(ctx, "warn", "tencent: chat candidate rejected; trying the next key")
 			continue
 		}
 		return nil, classifyUpstreamError(result.StatusCode, result.Body)
 	}
-	return nil, pluginkit.NewError("upstream_unavailable", "every credential candidate failed", http.StatusBadGateway)
+	return nil, cpakit.NewError("upstream_unavailable", "every credential candidate failed", http.StatusBadGateway)
 }
 
 // dedupeCredentials drops duplicate candidates by rotation key, keeping the
@@ -364,26 +360,26 @@ func (p *pluginState) chatHeadersFor(kind *credentialKind, creds *credentials) h
 // classifyUpstreamError maps an upstream failure onto a client-visible error
 // with the right HTTP status, so a credential or quota problem is not reported
 // as a gateway fault.
-func classifyUpstreamError(status int, body []byte) *pluginkit.PluginError {
+func classifyUpstreamError(status int, body []byte) *cpakit.PluginError {
 	text := string(body)
 	code := gjsonInt(body, "code")
 	switch {
 	case status == 402 || containsAny(text, "积分不足", "额度不足", "insufficient credit", "credit not enough"):
-		return pluginkit.NewError("insufficient_quota", "credit exhausted: "+truncateBody(body), http.StatusForbidden)
+		return cpakit.NewError("insufficient_quota", "credit exhausted: "+truncateBody(body), http.StatusForbidden)
 	case status == 401 || containsAny(text, "Offline user session not found", "12153"):
-		return pluginkit.NewError("invalid_credential", "the session is no longer valid: "+truncateBody(body), http.StatusUnauthorized)
+		return cpakit.NewError("invalid_credential", "the session is no longer valid: "+truncateBody(body), http.StatusUnauthorized)
 	case code == 11128:
-		return pluginkit.NewError("invalid_request", "upstream rejected a developer-role message: "+truncateBody(body), http.StatusBadRequest)
+		return cpakit.NewError("invalid_request", "upstream rejected a developer-role message: "+truncateBody(body), http.StatusBadRequest)
 	case code == 12403:
-		return pluginkit.NewError("invalid_request", "upstream rejected the client identity: "+truncateBody(body), http.StatusBadRequest)
+		return cpakit.NewError("invalid_request", "upstream rejected the client identity: "+truncateBody(body), http.StatusBadRequest)
 	case code == 11133:
-		return pluginkit.NewError("invalid_request", "upstream rejected max_tokens or reasoning effort: "+truncateBody(body), http.StatusBadRequest)
+		return cpakit.NewError("invalid_request", "upstream rejected max_tokens or reasoning effort: "+truncateBody(body), http.StatusBadRequest)
 	case status == 429:
-		return pluginkit.NewError("rate_limited", "rate limited: "+truncateBody(body), http.StatusTooManyRequests)
+		return cpakit.NewError("rate_limited", "rate limited: "+truncateBody(body), http.StatusTooManyRequests)
 	case status >= 500:
-		return pluginkit.NewError("upstream_unavailable", "upstream error: "+truncateBody(body), http.StatusBadGateway)
+		return cpakit.NewError("upstream_unavailable", "upstream error: "+truncateBody(body), http.StatusBadGateway)
 	default:
-		return pluginkit.NewError("upstream_error", fmt.Sprintf("upstream returned HTTP %d: %s", status, truncateBody(body)), status)
+		return cpakit.NewError("upstream_error", fmt.Sprintf("upstream returned HTTP %d: %s", status, truncateBody(body)), status)
 	}
 }
 

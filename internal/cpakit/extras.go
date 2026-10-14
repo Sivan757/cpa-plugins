@@ -25,12 +25,12 @@ type PluginError = Error
 
 // BadRequestError builds a 400 failure.
 func BadRequestError(message string) *Error {
-	return &Error{Class: ClassUnsupported, Message: message, StatusCode: http.StatusBadRequest}
+	return &Error{Code: string(ClassUnsupported), Message: message, HTTPStatus: http.StatusBadRequest}
 }
 
 // NotFoundError builds a 404 failure.
 func NotFoundError(what string) *Error {
-	return &Error{Class: ClassInvalidModel, Message: what + " not found", StatusCode: http.StatusNotFound}
+	return &Error{Code: string(ClassInvalidModel), Message: what + " not found", HTTPStatus: http.StatusNotFound}
 }
 
 // StatusError maps an upstream HTTP status onto a plugin error that preserves
@@ -50,7 +50,7 @@ func StatusError(status int, context string, body []byte) *Error {
 		code = ClassUnsupported
 	}
 	message := fmt.Sprintf("%s: upstream returned HTTP %d: %s", context, status, TruncateBody(body, 300))
-	return &Error{Class: code, Message: Redact(message), StatusCode: status, Retryable: status == 429 || status >= 500}
+	return &Error{Code: string(code), Message: Redact(message), HTTPStatus: status, Retryable: status == 429 || status >= 500}
 }
 
 // JSONManagementResponse is a helper for management route handlers.

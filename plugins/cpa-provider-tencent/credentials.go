@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // credentials is one usable credential regardless of kind. Every capability
@@ -118,12 +118,12 @@ func (p *pluginState) resolve(ctx context.Context, kind *credentialKind) (*crede
 // from the x-api-key header and a mixed answer would be misleading.
 func (p *pluginState) resolveAll(ctx context.Context, kind *credentialKind) (*credentials, []*credentials, error) {
 	if kind == nil {
-		return nil, nil, pluginkit.NewError("invalid_credential", "unknown credential kind", http.StatusUnauthorized)
+		return nil, nil, cpakit.NewError("invalid_credential", "unknown credential kind", http.StatusUnauthorized)
 	}
 	if kind.desktop {
 		creds, errLoad := loadDesktopCredentials(kind, p.keysFor(kind))
 		if errLoad != nil {
-			return nil, nil, pluginkit.NewError("invalid_credential", errLoad.Error(), http.StatusUnauthorized)
+			return nil, nil, cpakit.NewError("invalid_credential", errLoad.Error(), http.StatusUnauthorized)
 		}
 		creds.AppVersion = p.appVersion(kind)
 		creds.CLIVersion = cliVersionFromBundle(kind)
@@ -142,7 +142,7 @@ func (p *pluginState) resolveCodeBuddyAll(ctx context.Context, kind *credentialK
 			// effort: a failed refresh still serves the stale token, because
 			// the gateway, not the timestamp, is the authority.
 			if errRefresh := p.refreshTokens(ctx, stored); errRefresh == nil {
-				pluginkit.HostLog(ctx, "info", "tencent: refreshed the CodeBuddy access token")
+				cpakit.HostLog(ctx, "info", "tencent: refreshed the CodeBuddy access token")
 			}
 		}
 		creds := &credentials{
@@ -165,7 +165,7 @@ func (p *pluginState) resolveCodeBuddyAll(ctx context.Context, kind *credentialK
 		keys = splitAPIKeys(getEnv(envAPIKey))
 	}
 	if len(keys) == 0 {
-		return nil, nil, pluginkit.NewError("invalid_credential",
+		return nil, nil, cpakit.NewError("invalid_credential",
 			fmt.Sprintf("no %s credential: complete the browser login or set an API key (config api_key or %s)", kind.displayName, envAPIKey), http.StatusUnauthorized)
 	}
 	out := make([]*credentials, 0, len(keys))

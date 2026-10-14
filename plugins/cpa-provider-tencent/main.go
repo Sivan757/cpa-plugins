@@ -6,8 +6,6 @@
 // stop competing over overlapping model identifiers.
 package main
 
-import "github.com/sivan/cpa-plugins/internal/pluginkit"
+import "github.com/sivan/cpa-plugins/internal/cpakit"
 
-func init() {
-	pluginkit.RegisterPlugin(newGateway())
-}
+func init() { cpakit.RegisterPlugin(newGateway()) }

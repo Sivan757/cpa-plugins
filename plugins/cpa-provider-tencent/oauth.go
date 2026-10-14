@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // oauthEnvelope is the {code,msg,data} wrapper every plugin-auth endpoint uses.
@@ -55,24 +55,24 @@ func createAuthState(ctx context.Context, baseURL string) (*authStateData, error
 	headers.Set("Accept", "application/json")
 
 	var envelope oauthEnvelope
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodPost, endpoint, headers, nil, &envelope)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodPost, endpoint, headers, nil, &envelope)
 	if errCall != nil {
-		return nil, pluginkit.NewError("upstream_unavailable", "create CodeBuddy login state: "+errCall.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_unavailable", "create CodeBuddy login state: "+errCall.Error(), http.StatusBadGateway)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return nil, pluginkit.StatusError(result.StatusCode, "create CodeBuddy login state", result.Body)
+		return nil, cpakit.StatusError(result.StatusCode, "create CodeBuddy login state", result.Body)
 	}
 	if envelope.Code != 0 {
-		return nil, pluginkit.NewError("upstream_error",
+		return nil, cpakit.NewError("upstream_error",
 			fmt.Sprintf("create CodeBuddy login state returned code %d: %s", envelope.Code, envelope.Msg),
 			http.StatusBadGateway)
 	}
 	var data authStateData
 	if errDecode := json.Unmarshal(envelope.Data, &data); errDecode != nil {
-		return nil, pluginkit.NewError("upstream_error", "decode login state: "+errDecode.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_error", "decode login state: "+errDecode.Error(), http.StatusBadGateway)
 	}
 	if strings.TrimSpace(data.State) == "" {
-		return nil, pluginkit.NewError("upstream_error", "the login state response carried no state token", http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_error", "the login state response carried no state token", http.StatusBadGateway)
 	}
 	return &data, nil
 }
@@ -88,25 +88,25 @@ func pollAuthToken(ctx context.Context, baseURL, state string) (*oauthTokenData,
 	headers.Set("Accept", "application/json")
 
 	var envelope oauthEnvelope
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodGet, endpoint, headers, nil, &envelope)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, endpoint, headers, nil, &envelope)
 	if errCall != nil {
-		return nil, false, pluginkit.NewError("upstream_unavailable", "poll CodeBuddy login: "+errCall.Error(), http.StatusBadGateway)
+		return nil, false, cpakit.NewError("upstream_unavailable", "poll CodeBuddy login: "+errCall.Error(), http.StatusBadGateway)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return nil, false, pluginkit.StatusError(result.StatusCode, "poll CodeBuddy login", result.Body)
+		return nil, false, cpakit.StatusError(result.StatusCode, "poll CodeBuddy login", result.Body)
 	}
 	if envelope.Code == authPendingCode {
 		return nil, true, nil
 	}
 	if envelope.Code != 0 {
-		return nil, false, pluginkit.NewError("upstream_error",
+		return nil, false, cpakit.NewError("upstream_error",
 			fmt.Sprintf("login poll returned code %d: %s", envelope.Code, envelope.Msg),
 			http.StatusBadGateway)
 	}
 	var data oauthTokenData
 	if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
 		if errDecode := json.Unmarshal(envelope.Data, &data); errDecode != nil {
-			return nil, false, pluginkit.NewError("upstream_error", "decode login token: "+errDecode.Error(), http.StatusBadGateway)
+			return nil, false, cpakit.NewError("upstream_error", "decode login token: "+errDecode.Error(), http.StatusBadGateway)
 		}
 	}
 	if strings.TrimSpace(data.AccessToken) == "" {
@@ -132,7 +132,7 @@ func fetchLoginAccount(ctx context.Context, baseURL, state, accessToken, domain 
 	headers.Set("X-No-Enterprise-Id", "true")
 
 	var envelope oauthEnvelope
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodGet, endpoint, headers, nil, &envelope)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, endpoint, headers, nil, &envelope)
 	if errCall != nil || result.StatusCode < 200 || result.StatusCode >= 300 || envelope.Code != 0 {
 		return nil
 	}
@@ -170,26 +170,26 @@ func refreshOAuthToken(ctx context.Context, baseURL string, stored *storedAuth) 
 	}
 
 	var envelope oauthEnvelope
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodPost, endpoint, headers, map[string]any{}, &envelope)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodPost, endpoint, headers, map[string]any{}, &envelope)
 	if errCall != nil {
-		return nil, pluginkit.NewError("upstream_unavailable", "refresh CodeBuddy token: "+errCall.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_unavailable", "refresh CodeBuddy token: "+errCall.Error(), http.StatusBadGateway)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return nil, pluginkit.NewError("invalid_credential",
+		return nil, cpakit.NewError("invalid_credential",
 			"CodeBuddy rejected the OAuth refresh; start the device login again: "+truncateBody(result.Body),
 			http.StatusUnauthorized)
 	}
 	if envelope.Code != 0 {
-		return nil, pluginkit.NewError("invalid_credential",
+		return nil, cpakit.NewError("invalid_credential",
 			fmt.Sprintf("CodeBuddy refresh returned code %d: %s; start the device login again", envelope.Code, envelope.Msg),
 			http.StatusUnauthorized)
 	}
 	var data oauthTokenData
 	if errDecode := json.Unmarshal(envelope.Data, &data); errDecode != nil {
-		return nil, pluginkit.NewError("upstream_error", "decode refreshed token: "+errDecode.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_error", "decode refreshed token: "+errDecode.Error(), http.StatusBadGateway)
 	}
 	if strings.TrimSpace(data.AccessToken) == "" {
-		return nil, pluginkit.NewError("invalid_credential", "CodeBuddy refresh returned no access token", http.StatusUnauthorized)
+		return nil, cpakit.NewError("invalid_credential", "CodeBuddy refresh returned no access token", http.StatusUnauthorized)
 	}
 	return &data, nil
 }

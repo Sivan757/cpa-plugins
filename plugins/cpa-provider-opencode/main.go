@@ -6,8 +6,8 @@
 // Both speak the OpenAI chat-completions shape, so one executor serves them.
 package main
 
-import "github.com/sivan/cpa-plugins/internal/pluginkit"
+import "github.com/sivan/cpa-plugins/internal/cpakit"
 
 func init() {
-	pluginkit.RegisterPlugin(newGateway())
+	cpakit.RegisterPlugin(newGateway())
 }

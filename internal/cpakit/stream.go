@@ -60,7 +60,7 @@ func AggregateStream(body []byte) ([]byte, error) {
 			continue
 		}
 		if message := InBandError(event); message != "" {
-			return nil, &Error{Class: ClassUpstream, Message: Redact("upstream reported an error in the stream: " + message), StatusCode: http.StatusBadGateway}
+			return nil, &Error{Code: string(ClassUpstream), Message: Redact("upstream reported an error in the stream: " + message), HTTPStatus: http.StatusBadGateway}
 		}
 		sawEvent = true
 		if value, okValue := event["id"].(string); okValue && value != "" {
@@ -103,7 +103,7 @@ func AggregateStream(body []byte) ([]byte, error) {
 		}
 	}
 	if !sawEvent {
-		return nil, &Error{Class: ClassUpstream, Message: "upstream returned no stream events", StatusCode: http.StatusBadGateway}
+		return nil, &Error{Code: string(ClassUpstream), Message: "upstream returned no stream events", HTTPStatus: http.StatusBadGateway}
 	}
 
 	message := map[string]any{"role": "assistant", "content": content.String()}
@@ -347,7 +347,7 @@ func (b *HostBridge) PumpUpstream(downStreamID, upStreamID string, convert func(
 			break
 		}
 		if errMsg != "" {
-			pumpErr = &Error{Class: ClassUpstream, Message: Redact(errMsg), StatusCode: http.StatusBadGateway}
+			pumpErr = &Error{Code: string(ClassUpstream), Message: Redact(errMsg), HTTPStatus: http.StatusBadGateway}
 			break
 		}
 		if errPump := read(payload); errPump != nil {

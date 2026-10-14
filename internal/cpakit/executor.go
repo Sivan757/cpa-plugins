@@ -52,11 +52,12 @@ func SSEFromStrings(payloads []string) [][]byte {
 }
 
 // DecodeExecutorRequest decodes an executor RPC payload and returns the official
-// request plus the downstream stream id.
-func DecodeExecutorRequest(request json.RawMessage) (pluginapi.ExecutorRequest, string, error) {
+// request, the downstream stream id, and the host callback id that pins later
+// host calls to this request.
+func DecodeExecutorRequest(request json.RawMessage) (pluginapi.ExecutorRequest, string, string, error) {
 	envelope, errDecode := Decode[ExecutorEnvelope](request)
 	if errDecode != nil {
-		return pluginapi.ExecutorRequest{}, "", errDecode
+		return pluginapi.ExecutorRequest{}, "", "", errDecode
 	}
-	return envelope.ExecutorRequest, envelope.StreamID, nil
+	return envelope.ExecutorRequest, envelope.StreamID, envelope.HostCallbackID, nil
 }

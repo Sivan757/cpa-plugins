@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // catalogCache keeps one short-lived snapshot per credential kind so a model
@@ -23,11 +23,11 @@ type catalogCache struct {
 
 // catalogEntry is one kind's cached roster and the time it was read.
 type catalogEntry struct {
-	models   []pluginkit.ModelInfo
+	models   []cpakit.ModelInfo
 	loadedAt time.Time
 }
 
-func (c *catalogCache) get(kindID string) ([]pluginkit.ModelInfo, bool) {
+func (c *catalogCache) get(kindID string) ([]cpakit.ModelInfo, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[kindID]
@@ -37,7 +37,7 @@ func (c *catalogCache) get(kindID string) ([]pluginkit.ModelInfo, bool) {
 	return entry.models, true
 }
 
-func (c *catalogCache) put(kindID string, models []pluginkit.ModelInfo) {
+func (c *catalogCache) put(kindID string, models []cpakit.ModelInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
@@ -65,7 +65,7 @@ func (c *catalogCache) countFor(kindID string) int {
 }
 
 // modelsForAuth discovers the live model roster for one credential.
-func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, creds *credentials) ([]pluginkit.ModelInfo, error) {
+func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, creds *credentials) ([]cpakit.ModelInfo, error) {
 	if cached, ok := p.cache.get(kind.id); ok {
 		return cached, nil
 	}
@@ -76,7 +76,7 @@ func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, c
 	}
 	models := buildModels(kind, doc, time.Now())
 	if len(models) == 0 {
-		return nil, pluginkit.NewError("upstream_error", "the model catalog contained no usable models", 502)
+		return nil, cpakit.NewError("upstream_error", "the model catalog contained no usable models", 502)
 	}
 	p.cache.put(kind.id, models)
 	return models, nil
@@ -87,7 +87,7 @@ func (p *pluginState) modelsForKind(ctx context.Context, kind *credentialKind, c
 //
 // The gateway routes with the live catalog, so advertising anything else would
 // list models that fail selection with auth_not_found.
-func (p *pluginState) rosterForKind(ctx context.Context, kind *credentialKind) []pluginkit.ModelInfo {
+func (p *pluginState) rosterForKind(ctx context.Context, kind *credentialKind) []cpakit.ModelInfo {
 	creds, errCreds := p.resolve(ctx, kind)
 	if errCreds != nil {
 		return staticFallback(kind)
@@ -104,7 +104,7 @@ func (p *pluginState) rosterForKind(ctx context.Context, kind *credentialKind) [
 // The roster the plugin advertises is the intersection of the models the
 // account may call (agents[name=cli].models) and the rows that carry usable
 // token limits, preserving the roster's order.
-func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []pluginkit.ModelInfo {
+func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []cpakit.ModelInfo {
 	byID := make(map[string]modelRow, len(doc.Models))
 	for _, row := range doc.Models {
 		if row.ID != "" {
@@ -120,7 +120,7 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 		}
 	}
 
-	out := make([]pluginkit.ModelInfo, 0, len(order))
+	out := make([]cpakit.ModelInfo, 0, len(order))
 	seen := make(map[string]struct{}, len(order))
 	for _, upstreamID := range order {
 		row, ok := byID[upstreamID]
@@ -158,7 +158,7 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 			}
 		}
 
-		info := pluginkit.ModelInfo{
+		info := cpakit.ModelInfo{
 			ID:                  id,
 			Object:              "model",
 			OwnedBy:             v.displayName,
@@ -196,7 +196,7 @@ func buildModels(v *credentialKind, doc *catalogDocument, now time.Time) []plugi
 // thinkingSupport maps the upstream reasoning declaration onto the host's
 // thinking controls. A model that declares no effort list gets no controls: the
 // plugin never invents wire values the upstream has not confirmed.
-func thinkingSupport(row modelRow) *pluginkit.ThinkingSupport {
+func thinkingSupport(row modelRow) *cpakit.ThinkingSupport {
 	if !row.SupportsReasoning || row.Reasoning == nil {
 		return nil
 	}
@@ -209,7 +209,7 @@ func thinkingSupport(row modelRow) *pluginkit.ThinkingSupport {
 	if len(levels) == 0 {
 		return nil
 	}
-	return &pluginkit.ThinkingSupport{
+	return &cpakit.ThinkingSupport{
 		Levels:      levels,
 		ZeroAllowed: row.Reasoning.CanDisableThinking,
 	}
@@ -286,7 +286,7 @@ func cliRoster(doc *catalogDocument) []string {
 // staticFallback is the last-resort roster used when the catalog is
 // unreachable, so a model picker never goes empty. It carries no metrics the
 // plugin cannot verify: limits are conservative placeholders.
-func staticFallback(v *credentialKind) []pluginkit.ModelInfo {
+func staticFallback(v *credentialKind) []cpakit.ModelInfo {
 	var ids []string
 	if v.region == "cn" {
 		ids = []string{
@@ -302,9 +302,9 @@ func staticFallback(v *credentialKind) []pluginkit.ModelInfo {
 			"gemini-3.5-flash", "glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.6",
 		}
 	}
-	out := make([]pluginkit.ModelInfo, 0, len(ids))
+	out := make([]cpakit.ModelInfo, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, pluginkit.ModelInfo{
+		out = append(out, cpakit.ModelInfo{
 			ID:                        id,
 			Object:                    "model",
 			OwnedBy:                   v.displayName,
@@ -336,16 +336,16 @@ func staticFallback(v *credentialKind) []pluginkit.ModelInfo {
 //
 // A kind with no auth file keeps its roster untouched, so a credential that has
 // not been created yet cannot blank out the roster.
-func visibleRoster(byKind map[string][][]string, roster func(*credentialKind) []pluginkit.ModelInfo) []pluginkit.ModelInfo {
+func visibleRoster(byKind map[string][][]string, roster func(*credentialKind) []cpakit.ModelInfo) []cpakit.ModelInfo {
 	seen := map[string]bool{}
-	out := make([]pluginkit.ModelInfo, 0, 32)
+	out := make([]cpakit.ModelInfo, 0, 32)
 	for _, kind := range kinds {
 		sets := byKind[kind.id]
 		if len(sets) == 0 {
 			sets = [][]string{nil}
 		}
 		for _, excluded := range sets {
-			visible := pluginkit.FilterModelsByExclusion(roster(kind), excluded)
+			visible := cpakit.FilterModelsByExclusion(roster(kind), excluded)
 			for _, model := range visible {
 				id := strings.ToLower(strings.TrimSpace(model.ID))
 				if id == "" || seen[id] {

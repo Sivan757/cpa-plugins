@@ -166,7 +166,7 @@ func (g *gateway) Dispatch(ctx context.Context, method string, request json.RawM
 
 	// ---- execution ----
 	case cpakit.MethodExecutorExecute:
-		req, streamID, errDecode := cpakit.DecodeExecutorRequest(request)
+		req, streamID, _, errDecode := cpakit.DecodeExecutorRequest(request)
 		if errDecode != nil {
 			return nil, errDecode
 		}
@@ -177,7 +177,7 @@ func (g *gateway) Dispatch(ctx context.Context, method string, request json.RawM
 		}
 		return g.Execute(ctx, req)
 	case cpakit.MethodExecutorExecuteStream:
-		req, streamID, errDecode := cpakit.DecodeExecutorRequest(request)
+		req, streamID, _, errDecode := cpakit.DecodeExecutorRequest(request)
 		if errDecode != nil {
 			return nil, errDecode
 		}

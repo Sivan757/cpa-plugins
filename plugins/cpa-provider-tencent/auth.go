@@ -5,19 +5,19 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
-// ParseAuth implements pluginkit.AuthProvider. Every auth file whose type is
+// ParseAuth implements cpakit.AuthProvider. Every auth file whose type is
 // the provider key is claimed; the kind inside decides which upstream it drives.
-func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (pluginkit.AuthParseResponse, error) {
+func (g *gateway) ParseAuth(_ context.Context, req cpakit.AuthParseRequest) (cpakit.AuthParseResponse, error) {
 	if !strings.EqualFold(strings.TrimSpace(req.Provider), providerKey) {
-		return pluginkit.AuthParseResponse{Handled: false}, nil
+		return cpakit.AuthParseResponse{Handled: false}, nil
 	}
 	doc := parseStorage(req.RawJSON)
 	kind := kindFor(doc.Kind)
 	if doc.Kind != "" && kinds[doc.Kind] == nil {
-		return pluginkit.AuthParseResponse{Handled: false}, nil
+		return cpakit.AuthParseResponse{Handled: false}, nil
 	}
 	// A codebuddy record may carry its own PAT-less marker only; its token lives
 	// in the plugin's OAuth document or an API key.
@@ -26,9 +26,9 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 	// user-managed fields in the original document (excluded-models visibility,
 	// notes, aliases, ...) must ride through on Metadata — dropping them would
 	// silently erase those settings on the next re-synthesis.
-	return pluginkit.AuthParseResponse{
+	return cpakit.AuthParseResponse{
 		Handled: true,
-		Auth: pluginkit.AuthData{
+		Auth: cpakit.AuthData{
 			Provider:    providerKey,
 			ID:          providerKey + "-" + kind.id,
 			FileName:    req.FileName,
@@ -40,18 +40,18 @@ func (g *gateway) ParseAuth(_ context.Context, req pluginkit.AuthParseRequest) (
 	}, nil
 }
 
-// StartLogin implements pluginkit.AuthProvider. Only the codebuddy kind has a
+// StartLogin implements cpakit.AuthProvider. Only the codebuddy kind has a
 // browser flow: the desktop kinds are authenticated by their own apps.
-func (g *gateway) StartLogin(ctx context.Context, req pluginkit.AuthLoginStartRequest) (pluginkit.AuthLoginStartResponse, error) {
+func (g *gateway) StartLogin(ctx context.Context, req cpakit.AuthLoginStartRequest) (cpakit.AuthLoginStartResponse, error) {
 	if !strings.EqualFold(strings.TrimSpace(req.Provider), providerKey) {
-		return pluginkit.AuthLoginStartResponse{}, pluginkit.ErrUnhandled
+		return cpakit.AuthLoginStartResponse{}, cpakit.ErrUnhandled
 	}
 	kindID, _ := req.Metadata["kind"].(string)
 	if kindID == "" || kindID == "codebuddy" {
 		return g.startCodeBuddyLogin(ctx, req)
 	}
 	kind := kindFor(kindID)
-	return pluginkit.AuthLoginStartResponse{
+	return cpakit.AuthLoginStartResponse{
 		Provider: providerKey,
 		State:    "desktop-" + kind.id,
 		Metadata: map[string]any{
@@ -60,21 +60,21 @@ func (g *gateway) StartLogin(ctx context.Context, req pluginkit.AuthLoginStartRe
 	}, nil
 }
 
-// PollLogin implements pluginkit.AuthProvider.
-func (g *gateway) PollLogin(ctx context.Context, req pluginkit.AuthLoginPollRequest) (pluginkit.AuthLoginPollResponse, error) {
+// PollLogin implements cpakit.AuthProvider.
+func (g *gateway) PollLogin(ctx context.Context, req cpakit.AuthLoginPollRequest) (cpakit.AuthLoginPollResponse, error) {
 	if !strings.EqualFold(strings.TrimSpace(req.Provider), providerKey) {
-		return pluginkit.AuthLoginPollResponse{}, pluginkit.ErrUnhandled
+		return cpakit.AuthLoginPollResponse{}, cpakit.ErrUnhandled
 	}
 	if strings.HasPrefix(req.State, "desktop-") {
 		kindID := strings.TrimPrefix(req.State, "desktop-")
 		kind := kindFor(kindID)
 		creds, errCreds := g.impl.resolve(ctx, kind)
 		if errCreds != nil {
-			return pluginkit.AuthLoginPollResponse{Status: pluginkit.LoginPending, Message: errCreds.Error()}, nil
+			return cpakit.AuthLoginPollResponse{Status: cpakit.LoginPending, Message: errCreds.Error()}, nil
 		}
-		return pluginkit.AuthLoginPollResponse{
-			Status: pluginkit.LoginSuccess,
-			Auth: pluginkit.AuthData{
+		return cpakit.AuthLoginPollResponse{
+			Status: cpakit.LoginSuccess,
+			Auth: cpakit.AuthData{
 				Provider:    providerKey,
 				ID:          providerKey + "-" + kind.id,
 				FileName:    providerKey + "-" + kind.id + ".json",
@@ -90,16 +90,16 @@ func (g *gateway) PollLogin(ctx context.Context, req pluginkit.AuthLoginPollRequ
 	return g.pollCodeBuddyLogin(ctx, req)
 }
 
-// RefreshAuth implements pluginkit.AuthProvider.
-func (g *gateway) RefreshAuth(ctx context.Context, req pluginkit.AuthRefreshRequest) (pluginkit.AuthRefreshResponse, error) {
+// RefreshAuth implements cpakit.AuthProvider.
+func (g *gateway) RefreshAuth(ctx context.Context, req cpakit.AuthRefreshRequest) (cpakit.AuthRefreshResponse, error) {
 	doc := parseStorage(req.StorageJSON)
 	kind := kindFor(doc.Kind)
 	creds, errCreds := g.impl.resolve(ctx, kind)
 	if errCreds != nil {
-		return pluginkit.AuthRefreshResponse{}, errCreds
+		return cpakit.AuthRefreshResponse{}, errCreds
 	}
-	return pluginkit.AuthRefreshResponse{
-		Auth: pluginkit.AuthData{
+	return cpakit.AuthRefreshResponse{
+		Auth: cpakit.AuthData{
 			Provider:    providerKey,
 			ID:          firstNonEmpty(req.AuthID, providerKey+"-"+kind.id),
 			Label:       kind.displayName,

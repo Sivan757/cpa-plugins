@@ -1,9 +1,9 @@
-// Code generated from abi/abi.go.tmpl by "make sync-abi". DO NOT EDIT.
+// Code generated from abi/main.go.tmpl by "make sync-abi". DO NOT EDIT.
 //
-// This file is the C ABI surface of the plugin. The CLIProxyAPI host loads the
-// dynamic library, resolves cliproxy_plugin_init, and then exchanges JSON
-// envelopes through the function tables declared below.
-
+// This file is the C ABI surface of the plugin. The host loads the dynamic
+// library, resolves cliproxy_plugin_init, and exchanges JSON envelopes through
+// the function tables declared below. Every provider RPC is forwarded into
+// internal/cpakit, which owns the envelope, the host bridge, and dispatch.
 package main
 
 /*
@@ -65,44 +65,60 @@ import (
 	"errors"
 	"unsafe"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
-// errHostCall reports a failed host callback RPC.
+// errHostCall reports a failed host callback round-trip.
 var errHostCall = errors.New("host callback failed")
+
+// maxBufferLen bounds buffer lengths before a size_t to C.int conversion.
+// Values at or above 2^31 truncate negative, and C.GoBytes would then panic
+// outside any recover, taking the host process down.
+const maxBufferLen = 1<<31 - 1
 
 func main() {}
 
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
-	if plugin == nil {
+	if host == nil || plugin == nil {
+		return 1
+	}
+	if host.abi_version != C.uint32_t(pluginabi.ABIVersion) {
 		return 1
 	}
 	C.store_host_api(host)
-	pluginkit.SetHostCall(func(method string, request []byte) ([]byte, error) {
-		cMethod := C.CString(method)
-		defer C.free(unsafe.Pointer(cMethod))
-		var requestPtr *C.uint8_t
-		if len(request) > 0 {
-			requestPtr = (*C.uint8_t)(C.CBytes(request))
-			defer C.free(unsafe.Pointer(requestPtr))
-		}
-		var response C.cliproxy_buffer
-		if rc := C.call_host_api(cMethod, requestPtr, C.size_t(len(request)), &response); rc != 0 {
-			return nil, errHostCall
-		}
-		if response.ptr == nil {
-			return []byte("{\"ok\":true,\"result\":{}}"), nil
-		}
-		out := C.GoBytes(response.ptr, C.int(response.len))
-		C.free_host_buffer(response.ptr, response.len)
-		return out, nil
-	})
-	plugin.abi_version = C.uint32_t(pluginkit.ABIVersion)
+	cpakit.SetHost(hostCall)
+	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
 	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
 	return 0
+}
+
+// hostCall performs one host callback RPC through the stored function table.
+func hostCall(method string, request []byte) ([]byte, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	var requestPtr *C.uint8_t
+	if len(request) > 0 {
+		requestPtr = (*C.uint8_t)(C.CBytes(request))
+		defer C.free(unsafe.Pointer(requestPtr))
+	}
+	var response C.cliproxy_buffer
+	if rc := C.call_host_api(cMethod, requestPtr, C.size_t(len(request)), &response); rc != 0 {
+		return nil, errHostCall
+	}
+	if response.ptr == nil {
+		return cpakit.Empty(), nil
+	}
+	if int64(response.len) > maxBufferLen {
+		C.free_host_buffer(response.ptr, response.len)
+		return nil, errors.New("host callback returned an oversized buffer")
+	}
+	out := C.GoBytes(unsafe.Pointer(response.ptr), C.int(response.len))
+	C.free_host_buffer(response.ptr, response.len)
+	return out, nil
 }
 
 //export cliproxyPluginCall
@@ -112,15 +128,18 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		response.len = 0
 	}
 	if method == nil {
-		writeBuffer(response, pluginkit.Fail("invalid_method", "method is required"))
+		writeBuffer(response, cpakit.Fail("invalid_method", "method is required"))
 		return 1
 	}
 	var requestBytes []byte
 	if request != nil && requestLen > 0 {
+		if int64(requestLen) > maxBufferLen {
+			writeBuffer(response, cpakit.Fail("invalid_request", "request exceeds the maximum size"))
+			return 0
+		}
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	out := pluginkit.HandleCall(C.GoString(method), requestBytes)
-	writeBuffer(response, out)
+	writeBuffer(response, cpakit.Handle(C.GoString(method), requestBytes))
 	return 0
 }
 
@@ -135,6 +154,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {}
 
+// writeBuffer hands one encoded envelope back to the host.
 func writeBuffer(response *C.cliproxy_buffer, raw []byte) {
 	if response == nil || len(raw) == 0 {
 		return

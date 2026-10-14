@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // upstreamCall issues an authenticated request against one product's API.
@@ -21,12 +21,12 @@ import (
 // request outright when the header is simply missing. The CodeBuddy kind
 // instead uses its own CLI header group, which is what its endpoints resolve
 // the active key and account from.
-func upstreamCall(ctx context.Context, v *credentialKind, creds *credentials, method, url string, headers http.Header, body any, out any) (*pluginkit.HTTPResult, error) {
+func upstreamCall(ctx context.Context, v *credentialKind, creds *credentials, method, url string, headers http.Header, body any, out any) (*cpakit.HTTPResult, error) {
 	if headers == nil {
 		headers = http.Header{}
 	}
 	if creds == nil {
-		return nil, pluginkit.NewError("invalid_credential", "no credential was resolved for this request", 401)
+		return nil, cpakit.NewError("invalid_credential", "no credential was resolved for this request", 401)
 	}
 	if v != nil && v.id == kindCodebuddyID {
 		for key, values := range apiHeaders(creds) {
@@ -34,7 +34,7 @@ func upstreamCall(ctx context.Context, v *credentialKind, creds *credentials, me
 				headers.Set(key, value)
 			}
 		}
-		return pluginkit.HTTPJSON(ctx, method, url, headers, body, out)
+		return cpakit.HTTPJSON(ctx, method, url, headers, body, out)
 	}
 	headers.Set("Accept", "application/json, text/plain, */*")
 	bearer := creds.AccessToken
@@ -58,7 +58,7 @@ func upstreamCall(ctx context.Context, v *credentialKind, creds *credentials, me
 	} else {
 		headers.Set("X-No-Department-Info", "1")
 	}
-	return pluginkit.HTTPJSON(ctx, method, url, headers, body, out)
+	return cpakit.HTTPJSON(ctx, method, url, headers, body, out)
 }
 
 // desktopChatHeaders builds the identity header set for a desktop-product chat
@@ -239,7 +239,7 @@ func readCatalog(ctx context.Context, v *credentialKind, creds *credentials, app
 		return nil, errCall
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return nil, pluginkit.StatusError(result.StatusCode, "model catalog", result.Body)
+		return nil, cpakit.StatusError(result.StatusCode, "model catalog", result.Body)
 	}
 	doc, errDecode := decodeCatalog(result.Body, envelope)
 	if errDecode != nil {
@@ -257,7 +257,7 @@ func decodeCatalog(raw []byte, envelope configEnvelope) (*catalogDocument, error
 		}
 		if len(doc.Models) > 0 || len(doc.Agents) > 0 {
 			if envelope.Code != 0 {
-				return nil, pluginkit.NewError("upstream_error", fmt.Sprintf("catalog returned code %d: %s", envelope.Code, envelope.Msg), http.StatusBadGateway)
+				return nil, cpakit.NewError("upstream_error", fmt.Sprintf("catalog returned code %d: %s", envelope.Code, envelope.Msg), http.StatusBadGateway)
 			}
 			return &doc, nil
 		}
@@ -266,7 +266,7 @@ func decodeCatalog(raw []byte, envelope configEnvelope) (*catalogDocument, error
 		return nil, fmt.Errorf("decode catalog document: %w", errUnmarshal)
 	}
 	if len(doc.Models) == 0 && len(doc.Agents) == 0 {
-		return nil, pluginkit.NewError("upstream_error", "model catalog carried no models", http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_error", "model catalog carried no models", http.StatusBadGateway)
 	}
 	return &doc, nil
 }

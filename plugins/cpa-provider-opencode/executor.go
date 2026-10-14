@@ -9,33 +9,30 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
-
-// pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.1.0"
 
 // Execute performs a non-streaming chat completion. Zen's free tier refuses a
 // request that is not streaming, so the upstream call always streams and this
 // path collects the events into one completion.
-func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
+func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
 	plan, errPlan := g.impl.planFor(req)
 	if errPlan != nil {
-		return pluginkit.ExecutorResponse{}, errPlan
+		return cpakit.ExecutorResponse{}, errPlan
 	}
 	body, errPrepare := g.impl.prepareBody(req, plan)
 	if errPrepare != nil {
-		return pluginkit.ExecutorResponse{}, errPrepare
+		return cpakit.ExecutorResponse{}, errPrepare
 	}
 	result, errCall := g.impl.callChat(ctx, req, plan, body)
 	if errCall != nil {
-		return pluginkit.ExecutorResponse{}, errCall
+		return cpakit.ExecutorResponse{}, errCall
 	}
-	aggregated, errAggregate := pluginkit.AggregateStream(result.Body)
+	aggregated, errAggregate := cpakit.AggregateStream(result.Body)
 	if errAggregate != nil {
-		return pluginkit.ExecutorResponse{}, errAggregate
+		return cpakit.ExecutorResponse{}, errAggregate
 	}
-	return pluginkit.ExecutorResponse{
+	return cpakit.ExecutorResponse{
 		Payload: aggregated,
 		Headers: http.Header{"Content-Type": []string{"application/json"}},
 	}, nil
@@ -48,62 +45,52 @@ func (g *gateway) Execute(ctx context.Context, req pluginkit.ExecutorRequest) (p
 // parameter is still visible to the host's rotation and request-scoped error
 // rules; once a 2xx body is streaming, the events are forwarded on a goroutine
 // through the host stream so the upstream's timing survives.
-func (g *gateway) ExecuteStream(ctx context.Context, req pluginkit.ExecutorRequest) (pluginkit.ExecutorStreamResponse, error) {
+func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest, streamID string, hostCallbackID string) (cpakit.ExecutorStreamResponse, error) {
 	plan, errPlan := g.impl.planFor(req)
 	if errPlan != nil {
-		return pluginkit.ExecutorStreamResponse{}, errPlan
+		return cpakit.ExecutorStreamResponse{}, errPlan
 	}
 	body, errPrepare := g.impl.prepareBody(req, plan)
 	if errPrepare != nil {
-		return pluginkit.ExecutorStreamResponse{}, errPrepare
+		return cpakit.ExecutorStreamResponse{}, errPrepare
 	}
 
-	streamID := strings.TrimSpace(req.StreamID)
-	if streamID == "" || !pluginkit.HostAvailable() {
+	// Without a host stream there is nowhere to emit progressively, so fall back
+	// to the buffered reply rather than dropping output.
+	if strings.TrimSpace(streamID) == "" {
 		result, errCall := g.impl.callChat(ctx, req, plan, body)
 		if errCall != nil {
-			return pluginkit.ExecutorStreamResponse{}, errCall
+			return cpakit.ExecutorStreamResponse{}, errCall
 		}
-		return pluginkit.ExecutorStreamResponse{
-			Headers: streamHeaders(),
-			Chunks:  pluginkit.SplitSSE(result.Body),
-		}, nil
+		return cpakit.BufferedStream(cpakit.StreamHeaders(), cpakit.SplitSSE(result.Body)), nil
 	}
 
-	stream, errOpen := g.impl.openChatStream(ctx, req, plan, body)
+	callback := cpakit.NewHostCallback(hostCallbackID)
+	stream, errOpen := g.impl.openChatStream(ctx, req, callback, plan, body)
 	if errOpen != nil {
-		return pluginkit.ExecutorStreamResponse{}, errOpen
+		return cpakit.ExecutorStreamResponse{}, errOpen
 	}
 
-	callback := pluginkit.NewHostCallback(req.HostCallbackID)
 	go func() {
 		defer stream.Close()
-		if errForward := pluginkit.ForwardStream(callback, streamID, stream); errForward != nil {
-			callback.CloseStream(streamID, errForward.Error())
+		if errForward := cpakit.ForwardStream(callback, streamID, stream); errForward != nil {
+			callback.CloseStream(streamID, cpakit.Redact(errForward.Error()))
 			return
 		}
 		callback.CloseStream(streamID, "")
 	}()
 
-	return pluginkit.ExecutorStreamResponse{Headers: streamHeaders()}, nil
-}
-
-// streamHeaders is the header set every streamed reply carries.
-func streamHeaders() http.Header {
-	return http.Header{
-		"Content-Type":  []string{"text/event-stream"},
-		"Cache-Control": []string{"no-cache"},
-	}
+	return cpakit.ExecutorStreamResponse{Headers: cpakit.StreamHeaders()}, nil
 }
 
 // CountTokens is not offered by the upstream; the host falls back to its own
 // estimator.
-func (g *gateway) CountTokens(context.Context, pluginkit.ExecutorRequest) (pluginkit.ExecutorResponse, error) {
-	return pluginkit.ExecutorResponse{}, pluginkit.ErrUnhandled
+func (g *gateway) CountTokens(context.Context, cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
+	return cpakit.ExecutorResponse{}, cpakit.ErrUnhandled
 }
 
 // HttpRequest exposes raw HTTP bridging for diagnostics.
-func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPRequest) (pluginkit.ExecutorHTTPResponse, error) {
+func (g *gateway) HttpRequest(ctx context.Context, req cpakit.ExecutorHTTPRequest) (cpakit.ExecutorHTTPResponse, error) {
 	headers := clientHeaders(g.impl.version, g.impl.sessions.id("bridge"), g.impl.sessions.requestID())
 	for key, values := range req.Headers {
 		for _, value := range values {
@@ -113,11 +100,11 @@ func (g *gateway) HttpRequest(ctx context.Context, req pluginkit.ExecutorHTTPReq
 	if key := keyOf(req.Attributes, req.StorageJSON); key != "" {
 		headers.Set("Authorization", "Bearer "+key)
 	}
-	result, errDo := pluginkit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
+	result, errDo := cpakit.HTTPDo(ctx, req.Method, req.URL, headers, req.Body)
 	if errDo != nil {
-		return pluginkit.ExecutorHTTPResponse{}, pluginkit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
+		return cpakit.ExecutorHTTPResponse{}, cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
 	}
-	return pluginkit.ExecutorHTTPResponse{
+	return cpakit.ExecutorHTTPResponse{
 		StatusCode: result.StatusCode,
 		Headers:    result.Header,
 		Body:       result.Body,
@@ -144,7 +131,7 @@ var upstreamSessionHeaders = []string{
 // session identity first, then an explicit inbound header, then a digest of the
 // conversation's opening user message, which keeps a client that sends no
 // session header stable across its turns.
-func conversationSeed(req pluginkit.ExecutorRequest) string {
+func conversationSeed(req cpakit.ExecutorRequest) string {
 	if req.Metadata != nil {
 		if id, okID := req.Metadata["canonical_session_id"].(string); okID {
 			if trimmed := strings.TrimSpace(id); trimmed != "" {
@@ -162,7 +149,7 @@ func conversationSeed(req pluginkit.ExecutorRequest) string {
 
 // openingMessageDigest hashes the first user message of the conversation, which
 // is the part of the payload that does not change as the history grows.
-func openingMessageDigest(req pluginkit.ExecutorRequest) string {
+func openingMessageDigest(req cpakit.ExecutorRequest) string {
 	source := req.Payload
 	if len(source) == 0 {
 		source = req.OriginalRequest
@@ -204,9 +191,9 @@ type executionPlan struct {
 }
 
 // planFor resolves the tier, endpoint, credential and model for one request.
-func (p *pluginState) planFor(req pluginkit.ExecutorRequest) (*executionPlan, error) {
+func (p *pluginState) planFor(req cpakit.ExecutorRequest) (*executionPlan, error) {
 	if req.AuthProvider != providerKey {
-		return nil, pluginkit.NewError("invalid_credential", "selected auth provider is not opencode", http.StatusUnauthorized)
+		return nil, cpakit.NewError("invalid_credential", "selected auth provider is not opencode", http.StatusUnauthorized)
 	}
 	tier := tierOf(req.AuthAttributes, req.StorageJSON)
 	plan := &executionPlan{tier: tier, model: req.Model, baseURL: p.freeRoot()}
@@ -221,7 +208,7 @@ func (p *pluginState) planFor(req pluginkit.ExecutorRequest) (*executionPlan, er
 		plan.key = publicCredential
 	}
 	if plan.model == "" {
-		return nil, pluginkit.NewError("invalid_request", "no model was requested", http.StatusBadRequest)
+		return nil, cpakit.NewError("invalid_request", "no model was requested", http.StatusBadRequest)
 	}
 	return plan, nil
 }
@@ -233,14 +220,14 @@ func (p *pluginState) planFor(req pluginkit.ExecutorRequest) (*executionPlan, er
 // completed, and the model id is the upstream id. The remaining rewrites keep
 // the payload valid for the endpoint: an assistant turn that carries neither
 // content nor tool calls is rejected, and tool-call ids must be non-empty.
-func (p *pluginState) prepareBody(req pluginkit.ExecutorRequest, plan *executionPlan) ([]byte, error) {
+func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPlan) ([]byte, error) {
 	source := req.Payload
 	if len(source) == 0 {
 		source = req.OriginalRequest
 	}
 	var payload map[string]any
 	if errUnmarshal := json.Unmarshal(source, &payload); errUnmarshal != nil {
-		return nil, pluginkit.BadRequestError("decode chat payload: " + errUnmarshal.Error())
+		return nil, cpakit.BadRequestError("decode chat payload: " + errUnmarshal.Error())
 	}
 	payload["model"] = plan.model
 	payload["stream"] = true
@@ -284,18 +271,18 @@ func (p *pluginState) prepareBody(req pluginkit.ExecutorRequest, plan *execution
 
 	encoded, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
-		return nil, pluginkit.NewError("internal_error", "encode chat payload: "+errMarshal.Error(), http.StatusInternalServerError)
+		return nil, cpakit.NewError("internal_error", "encode chat payload: "+errMarshal.Error(), http.StatusInternalServerError)
 	}
-	pluginkit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: outbound body=%s", pluginkit.TruncateBody(encoded, 600)))
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: outbound body=%s", cpakit.TruncateBody(encoded, 600)))
 	return encoded, nil
 }
 
 // callChat posts a prepared body and returns the buffered response.
-func (p *pluginState) callChat(ctx context.Context, req pluginkit.ExecutorRequest, plan *executionPlan, body []byte) (*pluginkit.HTTPResult, error) {
+func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*cpakit.HTTPResult, error) {
 	headers := p.requestHeaders(plan, conversationSeed(req))
-	result, errDo := pluginkit.HTTPDo(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
+	result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
 	if errDo != nil {
-		return nil, pluginkit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
 		return nil, classifyUpstreamError(result.StatusCode, result.Body)
@@ -305,20 +292,20 @@ func (p *pluginState) callChat(ctx context.Context, req pluginkit.ExecutorReques
 
 // openChatStream opens the upstream as a live reader. A non-2xx head is fully
 // known before any body byte, so it is read and classified here.
-func (p *pluginState) openChatStream(ctx context.Context, req pluginkit.ExecutorRequest, plan *executionPlan, body []byte) (*pluginkit.HTTPStream, error) {
+func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*cpakit.HTTPStream, error) {
 	headers := p.requestHeaders(plan, conversationSeed(req))
-	stream, errOpen := pluginkit.OpenHTTPStreamAmbient(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
+	stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
 	if errOpen != nil {
-		return nil, pluginkit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
 	}
 	if stream.StatusCode >= 200 && stream.StatusCode < 300 {
 		return stream, nil
 	}
-	raw, errRead := pluginkit.ReadStreamBody(stream, 0)
+	raw, errRead := cpakit.ReadStreamBody(stream, 0)
 	status := stream.StatusCode
 	stream.Close()
 	if errRead != nil {
-		return nil, pluginkit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
+		return nil, cpakit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
 	}
 	return nil, classifyUpstreamError(status, raw)
 }
@@ -329,7 +316,7 @@ func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Head
 	session := p.sessions.id(seed)
 	request := p.sessions.requestID()
 	headers := clientHeaders(p.version, session, request)
-	pluginkit.HostLog(context.Background(), "info", fmt.Sprintf(
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
 		"opencode: outbound tier=%s url=%s ua=%s session=%s request=%s",
 		plan.tier, plan.baseURL+"/chat/completions", "opencode/"+p.version, session, request))
 	if plan.tier == tierGo {
@@ -346,22 +333,22 @@ func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Head
 // Zen reports non-credential refusals (an ended promotion, a region block, a
 // free-tier fingerprint mismatch) as 401 or 403. Reporting those as AUTH is
 // wrong, so FreeTierError and UpgradeRequired are surfaced as themselves.
-func classifyUpstreamError(status int, body []byte) *pluginkit.PluginError {
+func classifyUpstreamError(status int, body []byte) *cpakit.PluginError {
 	text := string(body)
 	switch {
 	case strings.Contains(text, "FreeTierError"):
-		return pluginkit.NewError("free_tier_refused",
-			"OpenCode refused the free tier: the request fingerprint was rejected. "+pluginkit.TruncateBody(body, 0), http.StatusForbidden)
+		return cpakit.NewError("free_tier_refused",
+			"OpenCode refused the free tier: the request fingerprint was rejected. "+cpakit.TruncateBody(body, 0), http.StatusForbidden)
 	case strings.Contains(text, "UpgradeRequired"):
-		return pluginkit.NewError("client_version_too_old",
-			"OpenCode requires a newer CLI version for the free tier. "+pluginkit.TruncateBody(body, 0), http.StatusForbidden)
+		return cpakit.NewError("client_version_too_old",
+			"OpenCode requires a newer CLI version for the free tier. "+cpakit.TruncateBody(body, 0), http.StatusForbidden)
 	case status == http.StatusTooManyRequests:
-		return pluginkit.NewError("rate_limited", "rate limited: "+pluginkit.TruncateBody(body, 0), http.StatusTooManyRequests)
+		return cpakit.NewError("rate_limited", "rate limited: "+cpakit.TruncateBody(body, 0), http.StatusTooManyRequests)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return pluginkit.NewError("invalid_credential", "the credential or tier was rejected: "+pluginkit.TruncateBody(body, 0), status)
+		return cpakit.NewError("invalid_credential", "the credential or tier was rejected: "+cpakit.TruncateBody(body, 0), status)
 	case status >= 500:
-		return pluginkit.NewError("upstream_unavailable", fmt.Sprintf("upstream error HTTP %d: %s", status, pluginkit.TruncateBody(body, 0)), http.StatusBadGateway)
+		return cpakit.NewError("upstream_unavailable", fmt.Sprintf("upstream error HTTP %d: %s", status, cpakit.TruncateBody(body, 0)), http.StatusBadGateway)
 	default:
-		return pluginkit.NewError("upstream_error", fmt.Sprintf("upstream returned HTTP %d: %s", status, pluginkit.TruncateBody(body, 0)), status)
+		return cpakit.NewError("upstream_error", fmt.Sprintf("upstream returned HTTP %d: %s", status, cpakit.TruncateBody(body, 0)), status)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // TestEnsureRequiredTools pins the free-tier shape rule: bash and read must be
@@ -60,7 +60,7 @@ func TestPrepareBodyForcesStreamAndModel(t *testing.T) {
 	state := newPluginState()
 	payload := []byte(`{"model":"stale-id","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	plan := &executionPlan{tier: tierFree, baseURL: freeBaseURL, model: "mimo-v2.6-flash-free", key: publicCredential}
-	prepared, errPrepare := state.prepareBody(pluginkit.ExecutorRequest{Payload: payload}, plan)
+	prepared, errPrepare := state.prepareBody(cpakit.ExecutorRequest{Payload: payload}, plan)
 	if errPrepare != nil {
 		t.Fatalf("prepareBody: %v", errPrepare)
 	}
@@ -119,7 +119,7 @@ func TestTierAndKeyResolution(t *testing.T) {
 // identity wins, then an explicit inbound session header, then the opening
 // message digest.
 func TestConversationSeedPrecedence(t *testing.T) {
-	digestReq := pluginkit.ExecutorRequest{
+	digestReq := cpakit.ExecutorRequest{
 		Payload: []byte(`{"messages":[{"role":"user","content":"first question"},{"role":"user","content":"second"}]}`),
 	}
 	byContent := conversationSeed(digestReq)
@@ -129,18 +129,18 @@ func TestConversationSeedPrecedence(t *testing.T) {
 	if again := conversationSeed(digestReq); again != byContent {
 		t.Fatalf("content seed is not stable: %q then %q", byContent, again)
 	}
-	grown := pluginkit.ExecutorRequest{
+	grown := cpakit.ExecutorRequest{
 		Payload: []byte(`{"messages":[{"role":"user","content":"first question"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}]}`),
 	}
 	if conversationSeed(grown) != byContent {
 		t.Fatalf("seed changed as the history grew: %q then %q", byContent, conversationSeed(grown))
 	}
-	other := pluginkit.ExecutorRequest{Payload: []byte(`{"messages":[{"role":"user","content":"a different question"}]}`)}
+	other := cpakit.ExecutorRequest{Payload: []byte(`{"messages":[{"role":"user","content":"a different question"}]}`)}
 	if conversationSeed(other) == byContent {
 		t.Fatalf("two conversations share the seed %q", byContent)
 	}
 
-	withHeader := pluginkit.ExecutorRequest{
+	withHeader := cpakit.ExecutorRequest{
 		Headers: http.Header{"X-Session-Affinity": []string{"affinity-1"}},
 		Payload: digestReq.Payload,
 	}
@@ -148,7 +148,7 @@ func TestConversationSeedPrecedence(t *testing.T) {
 		t.Fatalf("header seed = %q, want header:affinity-1", got)
 	}
 
-	withCanonical := pluginkit.ExecutorRequest{
+	withCanonical := cpakit.ExecutorRequest{
 		Metadata: map[string]any{"canonical_session_id": "canonical-1"},
 		Headers:  http.Header{"X-Session-Affinity": []string{"affinity-1"}},
 	}
@@ -162,16 +162,16 @@ func TestConversationSeedPrecedence(t *testing.T) {
 // while a different conversation must not.
 func TestConversationSeedStaysFixedAcrossTurns(t *testing.T) {
 	store := newSessionStore()
-	first := store.id(conversationSeed(pluginkit.ExecutorRequest{
+	first := store.id(conversationSeed(cpakit.ExecutorRequest{
 		Headers: http.Header{"X-Session-Id": []string{"conversation-a"}},
 	}))
-	second := store.id(conversationSeed(pluginkit.ExecutorRequest{
+	second := store.id(conversationSeed(cpakit.ExecutorRequest{
 		Headers: http.Header{"X-Session-Id": []string{"conversation-a"}},
 	}))
 	if first != second {
 		t.Fatalf("turn two used %q, turn one used %q", second, first)
 	}
-	other := store.id(conversationSeed(pluginkit.ExecutorRequest{
+	other := store.id(conversationSeed(cpakit.ExecutorRequest{
 		Headers: http.Header{"X-Session-Id": []string{"conversation-b"}},
 	}))
 	if other == first {

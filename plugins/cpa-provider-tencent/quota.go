@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // billingRequest is the quota query body.
@@ -86,12 +86,12 @@ type enterpriseUsage struct {
 }
 
 // quotaFetch implements the plugin's quota capability for one credential.
-func fetchQuota(ctx context.Context, v *credentialKind, creds *credentials) (pluginkit.QuotaFetchResponse, error) {
+func fetchQuota(ctx context.Context, v *credentialKind, creds *credentials) (cpakit.QuotaFetchResponse, error) {
 	if v == nil {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.NewError("invalid_credential", "unknown credential kind", 401)
+		return cpakit.QuotaFetchResponse{}, cpakit.NewError("invalid_credential", "unknown credential kind", 401)
 	}
 	if creds == nil {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.NewError("invalid_credential", "no credential was resolved", 401)
+		return cpakit.QuotaFetchResponse{}, cpakit.NewError("invalid_credential", "no credential was resolved", 401)
 	}
 	if v.region == "cn" && creds.isEnterprise() {
 		return fetchEnterpriseQuota(ctx, v, creds)
@@ -99,7 +99,7 @@ func fetchQuota(ctx context.Context, v *credentialKind, creds *credentials) (plu
 	return fetchPersonalQuota(ctx, v, creds)
 }
 
-func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentials) (pluginkit.QuotaFetchResponse, error) {
+func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentials) (cpakit.QuotaFetchResponse, error) {
 	now := time.Now()
 	body := billingRequest{
 		PageNumber:               1,
@@ -113,13 +113,13 @@ func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentia
 	var envelope billingEnvelope
 	result, errCall := upstreamCall(ctx, v, creds, http.MethodPost, v.billingURL, headers, body, &envelope)
 	if errCall != nil {
-		return pluginkit.QuotaFetchResponse{}, errCall
+		return cpakit.QuotaFetchResponse{}, errCall
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.StatusError(result.StatusCode, "quota query", result.Body)
+		return cpakit.QuotaFetchResponse{}, cpakit.StatusError(result.StatusCode, "quota query", result.Body)
 	}
 	if envelope.Code != 0 {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.NewError("upstream_error", fmt.Sprintf("quota query returned code %d: %s", envelope.Code, envelope.Msg), http.StatusBadGateway)
+		return cpakit.QuotaFetchResponse{}, cpakit.NewError("upstream_error", fmt.Sprintf("quota query returned code %d: %s", envelope.Code, envelope.Msg), http.StatusBadGateway)
 	}
 	var accounts []billingAccount
 	if envelope.Data != nil && envelope.Data.Response != nil && envelope.Data.Response.Data != nil {
@@ -127,7 +127,7 @@ func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentia
 	}
 
 	var total float64
-	buckets := make([]pluginkit.QuotaBucket, 0, len(accounts))
+	buckets := make([]cpakit.QuotaBucket, 0, len(accounts))
 	for _, account := range accounts {
 		remain, size := account.remaining()
 		total += remain
@@ -135,7 +135,7 @@ func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentia
 		if name == "" {
 			name = account.ProductName
 		}
-		bucket := pluginkit.QuotaBucket{
+		bucket := cpakit.QuotaBucket{
 			Window:      name,
 			ResetTime:   formatCycleEnd(account.CycleEndTime),
 			Description: fmt.Sprintf("剩余 %.2f / %.2f credits", remain, size),
@@ -146,13 +146,13 @@ func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentia
 		buckets = append(buckets, bucket)
 	}
 
-	response := pluginkit.QuotaFetchResponse{
-		Subscription: &pluginkit.QuotaSubscription{Plan: planLabel(accounts)},
-		Summary: []pluginkit.QuotaMetric{
-			pluginkit.Metric("remaining_credits", "剩余积分", total, "credits"),
-			pluginkit.Metric("packages", "套餐数", float64(len(accounts)), ""),
+	response := cpakit.QuotaFetchResponse{
+		Subscription: &cpakit.QuotaSubscription{Plan: planLabel(accounts)},
+		Summary: []cpakit.QuotaMetric{
+			cpakit.Metric("remaining_credits", "剩余积分", total, "credits"),
+			cpakit.Metric("packages", "套餐数", float64(len(accounts)), ""),
 		},
-		Groups: []pluginkit.QuotaGroup{{
+		Groups: []cpakit.QuotaGroup{{
 			DisplayName: v.displayName + " 积分",
 			Buckets:     buckets,
 		}},
@@ -160,35 +160,35 @@ func fetchPersonalQuota(ctx context.Context, v *credentialKind, creds *credentia
 	return response, nil
 }
 
-func fetchEnterpriseQuota(ctx context.Context, v *credentialKind, creds *credentials) (pluginkit.QuotaFetchResponse, error) {
+func fetchEnterpriseQuota(ctx context.Context, v *credentialKind, creds *credentials) (cpakit.QuotaFetchResponse, error) {
 	url := "https://www.codebuddy.cn/v2/billing/meter/get-enterprise-user-usage"
 	headers := v.billingHeaders()
 	var raw json.RawMessage
 	result, errCall := upstreamCall(ctx, v, creds, http.MethodPost, url, headers, map[string]any{}, &raw)
 	if errCall != nil {
-		return pluginkit.QuotaFetchResponse{}, errCall
+		return cpakit.QuotaFetchResponse{}, errCall
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.StatusError(result.StatusCode, "enterprise quota query", result.Body)
+		return cpakit.QuotaFetchResponse{}, cpakit.StatusError(result.StatusCode, "enterprise quota query", result.Body)
 	}
 	usage, errDecode := decodeEnterpriseUsage(result.Body)
 	if errDecode != nil {
-		return pluginkit.QuotaFetchResponse{}, errDecode
+		return cpakit.QuotaFetchResponse{}, errDecode
 	}
 	limit := firstPtr(usage.LimitNum, usage.LimitNumAlt)
 	used := firstPtr(usage.Credit, usage.UsedNum)
 	if limit == nil {
-		return pluginkit.QuotaFetchResponse{}, pluginkit.NewError("upstream_error", "enterprise quota response carried no limit", http.StatusBadGateway)
+		return cpakit.QuotaFetchResponse{}, cpakit.NewError("upstream_error", "enterprise quota response carried no limit", http.StatusBadGateway)
 	}
 	if *limit < 0 {
-		return pluginkit.QuotaFetchResponse{
-			Subscription: &pluginkit.QuotaSubscription{Plan: "企业额度（不限量）"},
-			Summary: []pluginkit.QuotaMetric{
+		return cpakit.QuotaFetchResponse{
+			Subscription: &cpakit.QuotaSubscription{Plan: "企业额度（不限量）"},
+			Summary: []cpakit.QuotaMetric{
 				{Key: "unlimited", Label: "额度", Value: 1, Unit: "unlimited", Format: "number"},
 			},
-			Groups: []pluginkit.QuotaGroup{{
+			Groups: []cpakit.QuotaGroup{{
 				DisplayName: "企业额度",
-				Buckets: []pluginkit.QuotaBucket{{
+				Buckets: []cpakit.QuotaBucket{{
 					Window:            "enterprise",
 					RemainingFraction: 1,
 					ResetTime:         usage.CycleResetTime,
@@ -199,7 +199,7 @@ func fetchEnterpriseQuota(ctx context.Context, v *credentialKind, creds *credent
 	}
 	if used == nil {
 		// Reporting a full bar would claim headroom we cannot verify.
-		return pluginkit.QuotaFetchResponse{}, pluginkit.NewError("upstream_error", "enterprise quota response carried a limit but no usage", http.StatusBadGateway)
+		return cpakit.QuotaFetchResponse{}, cpakit.NewError("upstream_error", "enterprise quota response carried a limit but no usage", http.StatusBadGateway)
 	}
 	remain := *limit - *used
 	if remain < 0 {
@@ -209,15 +209,15 @@ func fetchEnterpriseQuota(ctx context.Context, v *credentialKind, creds *credent
 	if *limit > 0 {
 		fraction = clampFraction(remain / *limit)
 	}
-	return pluginkit.QuotaFetchResponse{
-		Subscription: &pluginkit.QuotaSubscription{Plan: "企业额度"},
-		Summary: []pluginkit.QuotaMetric{
-			pluginkit.Metric("remaining_credits", "剩余额度", remain, "credits"),
-			pluginkit.Metric("total_credits", "总额度", *limit, "credits"),
+	return cpakit.QuotaFetchResponse{
+		Subscription: &cpakit.QuotaSubscription{Plan: "企业额度"},
+		Summary: []cpakit.QuotaMetric{
+			cpakit.Metric("remaining_credits", "剩余额度", remain, "credits"),
+			cpakit.Metric("total_credits", "总额度", *limit, "credits"),
 		},
-		Groups: []pluginkit.QuotaGroup{{
+		Groups: []cpakit.QuotaGroup{{
 			DisplayName: "企业额度",
-			Buckets: []pluginkit.QuotaBucket{{
+			Buckets: []cpakit.QuotaBucket{{
 				Window:            "enterprise",
 				RemainingFraction: fraction,
 				ResetTime:         usage.CycleResetTime,
@@ -252,7 +252,7 @@ func decodeEnterpriseUsage(raw []byte) (enterpriseUsage, error) {
 			return usage, nil
 		}
 	}
-	return enterpriseUsage{}, pluginkit.NewError("upstream_error", "could not locate usage fields in the enterprise quota response", http.StatusBadGateway)
+	return enterpriseUsage{}, cpakit.NewError("upstream_error", "could not locate usage fields in the enterprise quota response", http.StatusBadGateway)
 }
 
 func planLabel(accounts []billingAccount) string {
@@ -304,5 +304,5 @@ func formatCycleEnd(raw string) string {
 	if errParse != nil {
 		return ""
 	}
-	return pluginkit.FormatResetTime(parsed)
+	return cpakit.FormatResetTime(parsed)
 }

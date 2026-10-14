@@ -163,7 +163,7 @@ func NewError(code, message string, httpStatus ...int) *Error {
 	if len(httpStatus) > 0 {
 		status = httpStatus[0]
 	}
-	return &Error{Class: Class(code), Message: message, StatusCode: status}
+	return &Error{Code: code, Message: message, HTTPStatus: status}
 }
 
 // ErrUnsupported is returned by capability methods a provider does not supply.

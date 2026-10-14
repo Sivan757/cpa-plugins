@@ -5,18 +5,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // startCodeBuddyLogin begins the CodeBuddy device login and hands the
 // authorization URL back to the host, which is the only step a human must
 // complete. (Over the verified CodeBuddy oauth.go helpers.)
-func (g *gateway) startCodeBuddyLogin(ctx context.Context, req pluginkit.AuthLoginStartRequest) (pluginkit.AuthLoginStartResponse, error) {
+func (g *gateway) startCodeBuddyLogin(ctx context.Context, req cpakit.AuthLoginStartRequest) (cpakit.AuthLoginStartResponse, error) {
 	state, errState := createAuthState(ctx, defaultBaseURL)
 	if errState != nil {
-		return pluginkit.AuthLoginStartResponse{}, errState
+		return cpakit.AuthLoginStartResponse{}, errState
 	}
-	return pluginkit.AuthLoginStartResponse{
+	return cpakit.AuthLoginStartResponse{
 		Provider:  providerKey,
 		URL:       state.AuthURL,
 		State:     state.State,
@@ -31,14 +31,14 @@ func (g *gateway) startCodeBuddyLogin(ctx context.Context, req pluginkit.AuthLog
 // pollCodeBuddyLogin performs one token poll. A transient gateway failure
 // keeps the login pending so the host can poll again within the local
 // timeout; only a saved token ends the login successfully.
-func (g *gateway) pollCodeBuddyLogin(ctx context.Context, req pluginkit.AuthLoginPollRequest) (pluginkit.AuthLoginPollResponse, error) {
+func (g *gateway) pollCodeBuddyLogin(ctx context.Context, req cpakit.AuthLoginPollRequest) (cpakit.AuthLoginPollResponse, error) {
 	data, done, errPoll := pollAuthToken(ctx, defaultBaseURL, req.State)
 	if errPoll != nil {
-		return pluginkit.AuthLoginPollResponse{Status: pluginkit.LoginPending, Message: errPoll.Error()}, nil
+		return cpakit.AuthLoginPollResponse{Status: cpakit.LoginPending, Message: errPoll.Error()}, nil
 	}
 	if !done {
-		return pluginkit.AuthLoginPollResponse{
-			Status:  pluginkit.LoginPending,
+		return cpakit.AuthLoginPollResponse{
+			Status:  cpakit.LoginPending,
 			Message: "waiting for the CodeBuddy authorization page to be approved",
 		}, nil
 	}
@@ -55,12 +55,12 @@ func (g *gateway) pollCodeBuddyLogin(ctx context.Context, req pluginkit.AuthLogi
 		doc.EnterpriseName = info.EnterpriseName
 	}
 	if errSave := g.impl.saveStoredAuth(&doc); errSave != nil {
-		return pluginkit.AuthLoginPollResponse{}, pluginkit.NewError("internal_error", "persist the CodeBuddy credential: "+errSave.Error())
+		return cpakit.AuthLoginPollResponse{}, cpakit.NewError("internal_error", "persist the CodeBuddy credential: "+errSave.Error())
 	}
-	return pluginkit.AuthLoginPollResponse{
-		Status:  pluginkit.LoginSuccess,
+	return cpakit.AuthLoginPollResponse{
+		Status:  cpakit.LoginSuccess,
 		Message: "CodeBuddy credential saved",
-		Auth: pluginkit.AuthData{
+		Auth: cpakit.AuthData{
 			Provider:    providerKey,
 			ID:          providerKey + "-" + kind.id,
 			FileName:    providerKey + "-" + kind.id + ".json",
@@ -82,7 +82,7 @@ func (g *gateway) pollCodeBuddyLogin(ctx context.Context, req pluginkit.AuthLogi
 // only a new device login can fix it.
 func (p *pluginState) refreshTokens(ctx context.Context, doc *storedAuth) error {
 	if strings.TrimSpace(doc.RefreshToken) == "" {
-		return pluginkit.NewError("invalid_credential", "no CodeBuddy refresh token; run the browser login again", 401)
+		return cpakit.NewError("invalid_credential", "no CodeBuddy refresh token; run the browser login again", 401)
 	}
 	data, errRefresh := refreshOAuthToken(ctx, defaultBaseURL, doc)
 	if errRefresh != nil {

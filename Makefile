@@ -3,7 +3,7 @@
 # Every plugin directory needs the generated C ABI glue in abi.go. The glue is
 # identical for all plugins and carries the //export directives, which cgo only
 # emits for the main package, so it cannot be shared as a library — it is copied
-# in by sync-abi.
+# in by sync-abi from abi/main.go.tmpl.
 #
 # Every plugin is one dynamic library with one provider key. Multi-product
 # families are merged behind a single key instead, with one auth record per
@@ -13,28 +13,35 @@ PLUGIN_DIRS := $(wildcard plugins/*)
 PLUGIN_NAMES := $(notdir $(PLUGIN_DIRS))
 DIST := dist
 
-.PHONY: all build list sync-abi clean test test-live
+.PHONY: all build build-linux list sync-abi clean test test-live
 
 all: build
 
-build: sync-abi $(DIST)/cpa-provider-tencent.dylib $(DIST)/cpa-provider-qoder.dylib
+# Native build of every plugin for the host platform.
+build: sync-abi
+	@mkdir -p $(DIST)
+	@for dir in $(PLUGIN_DIRS); do \
+		name=$$(basename $$dir); \
+		(cd $$dir && CGO_ENABLED=1 go build -buildmode=c-shared -o ../../$(DIST)/$$name.dylib .) \
+		&& echo "built $(DIST)/$$name.dylib"; \
+	done
+
+# Cross-build for the Linux deployment target. The server build script runs this
+# inside a golang container so cgo sees a Linux toolchain.
+build-linux: sync-abi
+	@mkdir -p $(DIST)
+	@for dir in $(PLUGIN_DIRS); do \
+		name=$$(basename $$dir); \
+		(cd $$dir && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildmode=c-shared -o ../../$(DIST)/$$name.so .) \
+		&& echo "built $(DIST)/$$name.so"; \
+	done
 
 list:
 	@echo $(PLUGIN_NAMES)
 
 sync-abi:
-	@for dir in $(PLUGIN_DIRS); do cp abi/abi.go.tmpl $$dir/abi.go; done
+	@for dir in $(PLUGIN_DIRS); do cp abi/main.go.tmpl $$dir/abi.go; done
 	@echo "synced abi.go into $(words $(PLUGIN_DIRS)) plugin directories"
-
-$(DIST)/cpa-provider-tencent.dylib: sync-abi
-	@mkdir -p $(DIST)
-	cd plugins/cpa-provider-tencent && CGO_ENABLED=1 go build -buildmode=c-shared -o ../../$@ .
-	@rm -f $(DIST)/cpa-provider-tencent.h
-
-$(DIST)/cpa-provider-qoder.dylib: sync-abi
-	@mkdir -p $(DIST)
-	cd plugins/cpa-provider-qoder && CGO_ENABLED=1 go build -buildmode=c-shared -o ../../$@ .
-	@rm -f $(DIST)/cpa-provider-qoder.h
 
 test:
 	go test ./...

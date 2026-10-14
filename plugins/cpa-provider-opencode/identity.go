@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sivan/cpa-plugins/internal/pluginkit"
+	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
 // versionURL reports the newest published OpenCode CLI version. Zen refuses
@@ -137,7 +137,7 @@ func qualifies(version string) bool {
 // version that clears the free-tier floor.
 func resolveClientVersion(ctx context.Context) string {
 	var payload map[string]any
-	result, errCall := pluginkit.HTTPJSON(ctx, http.MethodGet, versionURL,
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, versionURL,
 		http.Header{"Accept": []string{"application/json"}}, nil, &payload)
 	if errCall != nil || result == nil || result.StatusCode != http.StatusOK {
 		return versionFallback
