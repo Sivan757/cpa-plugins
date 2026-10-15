@@ -10,6 +10,7 @@
 | `abi/main.go.tmpl` | cgo ABI 胶水模板。`make sync-abi` 把它复制到每个插件目录 |
 | `plugins/<name>/` | 一个插件对应一个 provider key |
 | `tools/export-tencent-credentials/` | 导出一台已登录机器的 WorkBuddy 桌面凭据，供没装该 App 的机器使用 |
+| `tools/export-opencode-credentials/` | 导出 OpenCode 控制台会话令牌与工作区，免费层需要 |
 | `scripts/install.sh` | 把构建产物安装到本机 CPA |
 
 ## 插件
