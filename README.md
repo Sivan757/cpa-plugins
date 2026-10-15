@@ -165,6 +165,19 @@ scp ~/.dsh-cpa/static-workbuddy-ai.json <server>:/opt/cliproxyapi/data/dsh-cpa/
 
 导出的记录含明文 token，用完删掉。access token 会过期，到期前重新导出。
 
+## muse-spark 与 Responses API
+
+免费层把 muse-spark 只发布在 Responses API 上。发到 /chat/completions 会被上游以 ModelProtocolUnsupported 拒绝，所以插件在目录里过滤掉了它们，等于完全无法访问。
+
+现在插件在内部做协议转换，并且只对 muse-spark 生效：
+
+- 请求侧：messages 换成 input，max_tokens 换成 max_output_tokens，system 换成 developer，function 工具声明拍平，工具调用与工具结果变成同级 item。
+- 响应侧：读 Responses 事件流并重新发出 chat.completion 分块；非流式路径把终止事件折叠成一个完整回复。
+
+其他模型完全走原来的 chat 路径，因此这条改动不影响已经工作的免费层。
+
+**区域限制。** muse-spark 有区域限制，上游按请求来源 IP 判断。实测同一账号从中国大陆被拒（This model is not available in your country），从服务器所在地可以正常调用。
+
 ## 上游端点
 
 插件按官方 Console API 文档使用端点（https://opencode.ai/v2/docs/console/api/inference/）：
