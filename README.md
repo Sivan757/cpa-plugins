@@ -86,9 +86,51 @@ Qoder 的模型 id 与 OpenCode Go 目录完全重叠。两个插件同时启用
 
 ### opencode
 
-免费层没有密钥。插件在首次配置时写一条 auth 记录 `opencode-free.json`，CPA 才会把免费模型路由过来。
-
 付费层在 `plugins.configs.cpa-provider-opencode.api_key` 配置 `oc_sk_...`，多把用逗号分隔；插件为每把 key 生成一条 auth 记录。
+
+**免费层需要账号凭据，不再接受匿名访问。** 实测：带 `Authorization: Bearer public` 的请求即使其余字段与官方 CLI 完全一致，也被上游以 `FreeTierError` 拒绝。接受的凭据是控制台签发的会话令牌加上所属工作区，两者都必须有：
+
+| 值 | 前缀 | 位置 |
+|---|---|---|
+| 会话令牌 | `st_` | `credential` 表，`integration_id='opencode' and active=1`，取 `value.access` |
+| 续期令牌 | `rt_` | 同一行，取 `value.refresh` |
+| 工作区 | `org_` | 同一行，取 `value.metadata.orgID` |
+
+数据库在 `~/.local/share/opencode/opencode.db`。
+
+**注意不要读错表。** 同一个数据库里的 `account` 与 `account_state` 存着另一套更早的凭据（`wrk_` 工作区），拿它去请求会返回 HTTP 401 或看起来像指纹问题的 403。
+
+用导出工具取凭据：
+
+```sh
+node tools/export-opencode-credentials/export.mjs
+# 输出 ~/.dsh-cpa/opencode-account.json（权限 0600）
+scp ~/.dsh-cpa/opencode-account.json <server>:/opt/cliproxyapi/data/dsh-cpa/
+```
+
+**两个请求头不能发。** 实测（令牌、工作区、会话 id、请求体、UA 全部相同，仅改请求头）：
+
+| 请求头 | 结果 |
+|---|---|
+| 带 `HTTP-Referer` | 403 `FreeTierError` |
+| 带 `x-session-affinity` | 403 `FreeTierError` |
+| 两者都不带 | 200 |
+
+触发条件是**头名**而不是值：换一个 referer 值同样被拒，而无关的头（如 `X-Foo`）不影响。`X-Session-Id` 被接受，但官方 CLI 不发它，所以也不发。
+
+**工具列表还要满足形状要求。** 列表里必须有名为 `read` 的工具且其 `properties` 非空；如果声明了 `bash`，它的 `properties` 也不能为空。属性名不校验，但工具名要：同样的 schema 换个名字就失效。占位声明因此各带一个真实参数（`bash.command`、`read.filePath`）。
+
+**令牌自动续期。** `refresh_token` 配好后，插件在到期前 1 小时自动续期：
+
+```sh
+POST https://opencode.ai/console/auth/device/token
+{"grant_type":"refresh_token","refresh_token":"rt_...","client_id":"opencode-cli"}
+# -> {"access_token":"st_...","refresh_token":"rt_...","expires_in":2592000,"org_id":"org_..."}
+```
+
+上游每次续期都会**轮换两个令牌并作废旧令牌**（旧 refresh token 再用报 `invalid_grant`）。因此同一凭据只能有一个所有者：不要让 CLI 和插件同时续期同一个账号，否则先续期的一方会把另一方的令牌作废。插件把轮换后的凭据写入 `credential_dir/opencode-account.json`，并且该文件优先于配置项，避免配置里的旧令牌在重载时覆盖已轮换的凭据。
+
+配置项 `session_token` / `refresh_token` / `org_id` 只是首次启动的引导值；`credential_dir` 必须指向挂载路径，否则容器重建会丢失轮换后的凭据。
 
 ### qoder
 
