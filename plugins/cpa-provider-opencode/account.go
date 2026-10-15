@@ -117,8 +117,14 @@ func (a *accountAuth) documentPath() string {
 	return filepath.Join(dir, "opencode-account.json")
 }
 
-// load reads the persisted credential, if any.
-func (a *accountAuth) load() {
+// load reads the persisted credential, if any, and reports whether it supplied
+// one.
+//
+// The return value decides precedence: the upstream rotates the refresh token on
+// every renewal, so once a rotation has been persisted the file is the only
+// current copy. A configuration value that still holds the pre-rotation token
+// would otherwise replace a working credential on the next reload.
+func (a *accountAuth) load() bool {
 	a.mu.Lock()
 	path := a.documentPath()
 	a.mu.Unlock()
@@ -130,14 +136,14 @@ func (a *accountAuth) load() {
 			a.loadWarning = fmt.Sprintf("read %s: %v", path, errRead)
 			a.mu.Unlock()
 		}
-		return
+		return false
 	}
 	var doc accountDocument
 	if errUnmarshal := json.Unmarshal(rawBytes, &doc); errUnmarshal != nil {
 		a.mu.Lock()
 		a.loadWarning = fmt.Sprintf("decode %s: %v", path, errUnmarshal)
 		a.mu.Unlock()
-		return
+		return false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -153,24 +159,29 @@ func (a *accountAuth) load() {
 	if doc.ExpiresAt > 0 {
 		a.expires = time.UnixMilli(doc.ExpiresAt)
 	}
+	return strings.TrimSpace(doc.AccessToken) != "" || strings.TrimSpace(doc.RefreshToken) != ""
 }
 
-// apply merges explicitly configured values over what was loaded. A configured
-// value wins, so an operator can replace a credential by editing the config.
-func (a *accountAuth) apply(access, refresh, orgID string) {
+// apply merges explicitly configured values.
+//
+// override selects the precedence. On a first run the configuration is the only
+// source, so it wins. Once a rotation has been persisted the file holds the
+// current pair, so the configuration only fills values the file lacks. An
+// operator who needs to replace a credential deletes the document.
+func (a *accountAuth) apply(access, refresh, orgID string, override bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if strings.TrimSpace(access) != "" {
-		a.access = strings.TrimSpace(access)
+	if value := strings.TrimSpace(access); value != "" && (override || a.access == "") {
+		a.access = value
 		// A token supplied by hand carries no stated expiry, so clear it: the
 		// next request renews when a refresh token is available.
 		a.expires = time.Time{}
 	}
-	if strings.TrimSpace(refresh) != "" {
-		a.refresh = strings.TrimSpace(refresh)
+	if value := strings.TrimSpace(refresh); value != "" && (override || a.refresh == "") {
+		a.refresh = value
 	}
-	if strings.TrimSpace(orgID) != "" {
-		a.orgID = strings.TrimSpace(orgID)
+	if value := strings.TrimSpace(orgID); value != "" && (override || a.orgID == "") {
+		a.orgID = value
 	}
 }
 

@@ -311,16 +311,38 @@ func TestAccountApplyPrefersConfiguredValues(t *testing.T) {
 	}
 
 	auth := &accountAuth{dir: dir}
-	auth.load()
+	if !auth.load() {
+		t.Fatal("load reported no credential")
+	}
 	if auth.access != "st_disk" || auth.orgID != "wrk_disk" {
 		t.Fatalf("load = %q / %q", auth.access, auth.orgID)
 	}
-	auth.apply("st_config", "", "wrk_config")
-	if auth.access != "st_config" || auth.orgID != "wrk_config" {
-		t.Fatalf("apply = %q / %q", auth.access, auth.orgID)
+
+	// The file outranks the configuration, because it holds the rotation. A stale
+	// configured refresh token must not replace it.
+	auth.apply("st_config", "rt_config", "wrk_config", false)
+	if auth.access != "st_disk" || auth.refresh != "rt_disk" || auth.orgID != "wrk_disk" {
+		t.Fatalf("persisted credential was overwritten: %q / %q / %q", auth.access, auth.refresh, auth.orgID)
 	}
-	// The refresh token is untouched, so renewal still works after an override.
-	if auth.refresh != "rt_disk" {
-		t.Fatalf("refresh = %q", auth.refresh)
+
+	// A gap the file leaves is still filled from the configuration.
+	auth.apply("", "", "wrk_filled", false)
+	if auth.orgID != "wrk_disk" {
+		t.Fatalf("a present value was replaced: %q", auth.orgID)
+	}
+	sparse := &accountAuth{dir: t.TempDir(), refresh: ""}
+	sparse.apply("", "rt_from_config", "wrk_from_config", false)
+	if sparse.refresh != "rt_from_config" || sparse.orgID != "wrk_from_config" {
+		t.Fatalf("gaps were not filled: %q / %q", sparse.refresh, sparse.orgID)
+	}
+
+	// On a first run there is no file, so the configuration wins outright.
+	fresh := &accountAuth{dir: t.TempDir()}
+	if fresh.load() {
+		t.Fatal("an empty directory reported a credential")
+	}
+	fresh.apply("st_config", "rt_config", "wrk_config", true)
+	if fresh.access != "st_config" || fresh.refresh != "rt_config" {
+		t.Fatalf("first-run configuration was ignored: %q / %q", fresh.access, fresh.refresh)
 	}
 }

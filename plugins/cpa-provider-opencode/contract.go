@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.3.0"
+var pluginVersion = "0.4.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -146,11 +146,14 @@ func (g *gateway) Configure(configYAML []byte) error {
 		g.impl.account = &accountAuth{}
 	}
 	g.impl.account.dir = g.impl.credentialDir
-	g.impl.account.load()
+	// A persisted document carries the post-rotation tokens, so it outranks the
+	// configuration; the configuration bootstraps the first run.
+	persisted := g.impl.account.load()
 	g.impl.account.apply(
 		cfg.String("session_token", ""),
 		cfg.String("refresh_token", ""),
 		cfg.String("org_id", ""),
+		!persisted,
 	)
 
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
