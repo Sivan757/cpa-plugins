@@ -55,10 +55,11 @@ func (p *pluginState) catalog(ctx context.Context, tier string) []cpakit.ModelIn
 
 // fetchCatalog reads one tier's model list from its gateway.
 func (p *pluginState) fetchCatalog(ctx context.Context, tier, version string) []cpakit.ModelInfo {
-	base := p.freeRoot()
+	base := p.freeCatalogueURL()
 	key := ""
 	if tier == tierGo {
-		base = p.goRoot()
+		// The Go base serves both its catalogue and its chat.
+		base = p.goRoot() + "/models"
 		if len(p.apiKeys) > 0 {
 			key = p.apiKeys[0]
 		}
@@ -71,7 +72,7 @@ func (p *pluginState) fetchCatalog(ctx context.Context, tier, version string) []
 	var payload struct {
 		Data []map[string]any
 	}
-	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, base+"/models", headers, nil, &payload)
+	result, errCall := cpakit.HTTPJSON(ctx, http.MethodGet, base, headers, nil, &payload)
 	if errCall != nil || result == nil || result.StatusCode < 200 || result.StatusCode >= 300 {
 		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: %s catalogue fetch failed", tier))
 		return nil

@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.7.0"
+var pluginVersion = "0.8.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -79,7 +79,7 @@ func (g *gateway) Metadata() cpakit.Metadata {
 			{
 				Name:        "base_url",
 				Type:        cpakit.FieldString,
-				Description: "Free-tier upstream root (default https://opencode.ai/zen/v1).",
+				Description: "Free-tier chat root (default https://opencode.ai/inference/openai/v1).",
 			},
 			{
 				Name:        "expose",
@@ -89,7 +89,7 @@ func (g *gateway) Metadata() cpakit.Metadata {
 			{
 				Name:        "go_base_url",
 				Type:        cpakit.FieldString,
-				Description: "Paid-tier upstream root (default https://opencode.ai/zen/go/v1).",
+				Description: "Paid-tier upstream root (default https://opencode.ai/inference/go/v1).",
 			},
 		},
 	}

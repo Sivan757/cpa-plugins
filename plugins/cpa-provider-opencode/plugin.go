@@ -9,11 +9,19 @@ import (
 	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
 
-// Upstream roots. The paid Go plan and the anonymous free tier are separate
-// gateways that happen to share a model catalogue.
+// Upstream roots, taken from the published Console API documentation.
+//
+// The free tier and the Go plan are separate gateways. Each keeps its own chat
+// base, and the free tier reads its model list from a different path than the one
+// it posts chat to. The older /zen/... roots still answer, but they are not the
+// documented contract, so the plugin targets the documented ones.
 const (
-	freeBaseURL = "https://opencode.ai/zen/v1"
-	goBaseURL   = "https://opencode.ai/zen/go/v1"
+	// freeBaseURL serves free-tier chat completions.
+	freeBaseURL = "https://opencode.ai/inference/openai/v1"
+	// freeModelsURL lists the models the free tier can reach.
+	freeModelsURL = "https://opencode.ai/inference/v1/models"
+	// goBaseURL serves the paid Go plan: chat completions and its model list.
+	goBaseURL = "https://opencode.ai/inference/go/v1"
 )
 
 // catalogTTL keeps a fetched catalogue briefly so the model-list request the

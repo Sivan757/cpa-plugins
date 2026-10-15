@@ -103,6 +103,19 @@ func (p *pluginState) freeRoot() string {
 	return freeBaseURL
 }
 
+// freeCatalogueURL resolves where the free-tier model list is read.
+//
+// The chat base is not the catalogue base: chat posts to .../inference/openai/v1
+// while the list lives at .../inference/v1/models. An explicit base_url override
+// targets a single root, so the catalogue follows it, which keeps a local capture
+// endpoint usable.
+func (p *pluginState) freeCatalogueURL() string {
+	if p.baseURL != "" {
+		return p.baseURL + "/models"
+	}
+	return freeModelsURL
+}
+
 // goRoot resolves the paid-tier upstream root.
 func (p *pluginState) goRoot() string {
 	if p.goURL != "" {

@@ -165,6 +165,24 @@ scp ~/.dsh-cpa/static-workbuddy-ai.json <server>:/opt/cliproxyapi/data/dsh-cpa/
 
 导出的记录含明文 token，用完删掉。access token 会过期，到期前重新导出。
 
+## 上游端点
+
+插件按官方 Console API 文档使用端点（https://opencode.ai/v2/docs/console/api/inference/）：
+
+| 用途 | 端点 |
+|---|---|
+| 免费层对话 | POST https://opencode.ai/inference/openai/v1/chat/completions |
+| 免费层模型列表 | GET https://opencode.ai/inference/v1/models |
+| Go 层对话与列表 | https://opencode.ai/inference/go/v1/... |
+
+**免费层的对话根与列表根不是同一个。** 对话在 /inference/openai/v1，列表在 /inference/v1；拿对话根去取列表会 404。配 base_url 时插件把列表按 <base_url>/models 解析，所以本地抓包代理仍然可用。
+
+旧的 /zen/v1 与 /zen/go/v1 目前仍然应答，两个 Go 基址也都能用。插件改用 /inference 是因为那是文档承认的契约，/zen 没有被承诺保留。
+
+**Go 层必须有 x-opencode-session。** 缺了它上游返回 400 MissingSessionID（实测）。免费层同样发送该头。
+
+官方文档还说明：付费模型需要 Authorization 头，免费对话模型可以不带；控制台也读 x-api-key、api-key、x-goog-api-key。服务账号 key（oc_sk_...）绑定单个工作区，不需要工作区头；用户令牌（st_...）则需要 x-org-id。
+
 ## 热重载
 
 配置内容变更会触发 CPA 重载（`internal/watcher/config_reload.go`）。宿主先比对文件内容哈希：内容没变就跳过，内容变了才重建插件运行时，并向已加载的插件发 `plugin.reconfigure`。只改文件时间戳不触发重载。
