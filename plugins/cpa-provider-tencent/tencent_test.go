@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -356,5 +357,85 @@ func TestExecutorStorageUnknownKindDoesNotPanic(t *testing.T) {
 	doc = parseStorage(nil)
 	if kindFor(doc.Kind) == nil {
 		t.Fatal("an empty storage blob must still resolve a kind")
+	}
+}
+
+// TestStaticCredentialFallsBackWhenNoDesktopApp proves the server path: a
+// machine without the WorkBuddy app resolves the exported credential, and a
+// document for the wrong product is rejected instead of silently used.
+func TestStaticCredentialFallsBackWhenNoDesktopApp(t *testing.T) {
+	dir := t.TempDir()
+	state := newPluginState()
+	state.credentialDirPath = dir
+
+	kind := kindFor("workbuddy-ai")
+	if kind == nil {
+		t.Fatal("workbuddy-ai kind is not registered")
+	}
+
+	// Nothing exported yet: the loader must report the missing file, not panic.
+	if _, errMissing := state.loadStaticCredentials(kind); errMissing == nil {
+		t.Fatal("a missing credential document resolved successfully")
+	}
+
+	document := map[string]any{
+		"kind":          "workbuddy-ai",
+		"mode":          "static",
+		"access_token":  "exported-access-token",
+		"refresh_token": "exported-refresh-token",
+		"uid":           "uid-1",
+		"enterprise_id": "ent-1",
+		"domain":        "example.invalid",
+		"expires_at":    int64(1823092283989),
+		"app_version":   "5.6.0",
+		"cli_version":   "1.2.3",
+	}
+	encoded, errMarshal := json.Marshal(document)
+	if errMarshal != nil {
+		t.Fatalf("marshal document: %v", errMarshal)
+	}
+	if errWrite := os.WriteFile(state.staticAuthPath(kind), encoded, 0o600); errWrite != nil {
+		t.Fatalf("write document: %v", errWrite)
+	}
+
+	creds, errLoad := state.loadStaticCredentials(kind)
+	if errLoad != nil {
+		t.Fatalf("load exported credential: %v", errLoad)
+	}
+	if creds.AccessToken != "exported-access-token" {
+		t.Fatalf("access token = %q", creds.AccessToken)
+	}
+	if creds.UID != "uid-1" || creds.EnterpriseID != "ent-1" || creds.Domain != "example.invalid" {
+		t.Fatalf("identity fields lost: %+v", creds)
+	}
+	if creds.AppVersion != "5.6.0" || creds.CLIVersion != "1.2.3" {
+		t.Fatalf("version claims lost: %+v", creds)
+	}
+	if creds.Mode != "static" {
+		t.Fatalf("mode = %q, want static", creds.Mode)
+	}
+	if expires := time.UnixMilli(1823092283989); !creds.ExpiresAt.Equal(expires) {
+		t.Fatalf("expiry = %v, want %v", creds.ExpiresAt, expires)
+	}
+
+	// A document exported for a different product must not be used here.
+	other := kindFor("workbuddy")
+	if other == nil {
+		t.Fatal("workbuddy kind is not registered")
+	}
+	if errOther := os.WriteFile(state.staticAuthPath(other), encoded, 0o600); errOther != nil {
+		t.Fatalf("write mismatched document: %v", errOther)
+	}
+	if _, errMismatch := state.loadStaticCredentials(other); errMismatch == nil {
+		t.Fatal("a credential for another product was accepted")
+	}
+
+	// An empty token must be refused rather than sent upstream.
+	blank, _ := json.Marshal(map[string]any{"kind": "workbuddy-ai", "access_token": ""})
+	if errBlank := os.WriteFile(state.staticAuthPath(kind), blank, 0o600); errBlank != nil {
+		t.Fatalf("write blank document: %v", errBlank)
+	}
+	if _, errEmpty := state.loadStaticCredentials(kind); errEmpty == nil {
+		t.Fatal("an empty access token was accepted")
 	}
 }

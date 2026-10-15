@@ -29,6 +29,10 @@ type pluginState struct {
 	// transportOverride redirects the transport at a local upstream. Tests set
 	// it; nothing in production does.
 	transportOverride *region
+
+	// expose narrows the advertised roster to matching ids. Empty means no
+	// restriction.
+	expose []string
 }
 
 func newPluginState() *pluginState {

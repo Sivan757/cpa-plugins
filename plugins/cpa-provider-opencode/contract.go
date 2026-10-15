@@ -61,6 +61,11 @@ func (g *gateway) Metadata() cpakit.Metadata {
 				Description: "Free-tier upstream root (default https://opencode.ai/zen/v1).",
 			},
 			{
+				Name:        "expose",
+				Type:        cpakit.FieldArray,
+				Description: "Only advertise models matching these patterns (e.g. '*-free'). Empty advertises everything.",
+			},
+			{
 				Name:        "go_base_url",
 				Type:        cpakit.FieldString,
 				Description: "Paid-tier upstream root (default https://opencode.ai/zen/go/v1).",
@@ -105,6 +110,9 @@ func (g *gateway) Configure(configYAML []byte) error {
 	}
 	if base := cfg.String("go_base_url", ""); base != "" {
 		g.impl.goURL = strings.TrimSuffix(base, "/")
+	}
+	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
+		g.impl.expose = patterns
 	}
 	g.impl.materializeTiers()
 	return nil
@@ -268,7 +276,8 @@ func (g *gateway) RefreshAuth(_ context.Context, req cpakit.AuthRefreshRequest) 
 func (g *gateway) StaticModels(ctx context.Context, req cpakit.StaticModelRequest) (cpakit.ModelResponse, error) {
 	models := g.impl.freeModels(ctx)
 	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
-	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.FilterModelsByExclusion(models, excluded)}, nil
+	models = cpakit.FilterModelsByExclusion(models, excluded)
+	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(models, g.impl.expose)}, nil
 }
 
 // ModelsForAuth publishes the catalogue the credential's tier may serve.
@@ -276,12 +285,16 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest
 	tier := tierOf(req.Attributes, req.StorageJSON)
 	models := g.impl.modelsForTier(ctx, tier)
 	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
-	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.FilterModelsByExclusion(models, excluded)}, nil
+	models = cpakit.FilterModelsByExclusion(models, excluded)
+	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(models, g.impl.expose)}, nil
 }
 
 // RegisterModels reports the anonymous catalogue.
 func (g *gateway) RegisterModels(ctx context.Context, _ cpakit.ModelRegistrationRequest) (cpakit.ModelRegistrationResponse, error) {
-	return cpakit.ModelRegistrationResponse{Provider: providerKey, Models: g.impl.freeModels(ctx)}, nil
+	return cpakit.ModelRegistrationResponse{
+		Provider: providerKey,
+		Models:   cpakit.ExposeOnly(g.impl.freeModels(ctx), g.impl.expose),
+	}, nil
 }
 
 // RegisterManagement declares the plugin's diagnostic route.

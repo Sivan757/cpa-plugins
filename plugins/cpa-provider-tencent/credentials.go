@@ -122,12 +122,27 @@ func (p *pluginState) resolveAll(ctx context.Context, kind *credentialKind) (*cr
 	}
 	if kind.desktop {
 		creds, errLoad := loadDesktopCredentials(kind, p.keysFor(kind))
-		if errLoad != nil {
-			return nil, nil, cpakit.NewError("invalid_credential", errLoad.Error(), http.StatusUnauthorized)
+		if errLoad == nil {
+			creds.AppVersion = p.appVersion(kind)
+			creds.CLIVersion = cliVersionFromBundle(kind)
+			return creds, []*credentials{creds}, nil
 		}
-		creds.AppVersion = p.appVersion(kind)
-		creds.CLIVersion = cliVersionFromBundle(kind)
-		return creds, []*credentials{creds}, nil
+		// The desktop app is not installed here, which is the normal case on a
+		// server. Fall back to a credential exported from a signed-in machine.
+		static, errStatic := p.loadStaticCredentials(kind)
+		if errStatic != nil {
+			return nil, nil, cpakit.NewError("invalid_credential",
+				fmt.Sprintf("%s; %s", errLoad.Error(), errStatic.Error()), http.StatusUnauthorized)
+		}
+		// The export carries the version claims when the bundle lookup cannot
+		// answer, so a server still sends the headers the gateway expects.
+		if static.AppVersion == "" {
+			static.AppVersion = p.appVersion(kind)
+		}
+		if static.CLIVersion == "" {
+			static.CLIVersion = cliVersionFromBundle(kind)
+		}
+		return static, []*credentials{static}, nil
 	}
 	return p.resolveCodeBuddyAll(ctx, kind)
 }

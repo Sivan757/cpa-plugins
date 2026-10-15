@@ -104,6 +104,9 @@ type pluginState struct {
 	// config values, refreshed on every plugin.reconfigure.
 	apiKeys     []string
 	freeEnabled bool
+	// expose narrows the advertised roster to matching ids. Empty means no
+	// restriction.
+	expose []string
 
 	// materialized guards the one-shot auth-record creation.
 	materialized bool

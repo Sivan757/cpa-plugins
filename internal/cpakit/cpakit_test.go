@@ -229,3 +229,44 @@ func TestSplitSSEFramesBareJSON(t *testing.T) {
 		t.Fatal("the host appends the terminator itself")
 	}
 }
+
+// TestExposeOnlyNarrowsTheRoster pins the allowlist semantics: an unset list
+// must not blank a picker, and a set list must be the only way a model reaches
+// a client.
+func TestExposeOnlyNarrowsTheRoster(t *testing.T) {
+	models := []ModelInfo{{ID: "qwen3.8-flash"}, {ID: "mimo-v2.6-flash-free"}, {ID: "deepseek-v4.1-flash"}, {ID: "glm-5.3"}}
+
+	if kept := ExposeOnly(models, nil); len(kept) != len(models) {
+		t.Fatalf("an unset allowlist removed models: %d left", len(kept))
+	}
+	if kept := ExposeOnly(models, []string{"  "}); len(kept) != len(models) {
+		t.Fatalf("a blank allowlist removed models: %d left", len(kept))
+	}
+
+	kept := ExposeOnly(models, []string{"qwen3.8-flash"})
+	if len(kept) != 1 || kept[0].ID != "qwen3.8-flash" {
+		t.Fatalf("exact allowlist = %+v", kept)
+	}
+
+	free := ExposeOnly(models, []string{"*-free"})
+	if len(free) != 1 || free[0].ID != "mimo-v2.6-flash-free" {
+		t.Fatalf("suffix allowlist = %+v", free)
+	}
+
+	// Two patterns, given as a comma-separated scalar, must both apply.
+	both := ExposeOnly(models, []string{"qwen3.8-flash, deepseek-v4.1-flash"})
+	if len(both) != 2 {
+		t.Fatalf("comma allowlist = %+v", both)
+	}
+
+	// A case difference must not hide a model.
+	cased := ExposeOnly(models, []string{"QWEN3.8-FLASH"})
+	if len(cased) != 1 {
+		t.Fatalf("allowlist is case-sensitive: %+v", cased)
+	}
+
+	// A pattern matching nothing yields an empty roster, not the full one.
+	if none := ExposeOnly(models, []string{"no-such-model"}); len(none) != 0 {
+		t.Fatalf("a non-matching allowlist exposed %d models", len(none))
+	}
+}

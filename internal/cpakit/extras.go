@@ -329,3 +329,37 @@ func ParseQuery(raw string) url.Values {
 	}
 	return values
 }
+
+// ExposeOnly narrows a model list to the ids matching any pattern.
+//
+// An empty pattern list means "no restriction" rather than "expose nothing",
+// because an unset allowlist must not blank a provider's model picker. Matching
+// reuses the exclusion glob so "*" and embedded wildcards behave identically.
+func ExposeOnly(models []ModelInfo, patterns []string) []ModelInfo {
+	if len(patterns) == 0 || len(models) == 0 {
+		return models
+	}
+	wanted := make([]string, 0, len(patterns))
+	for _, item := range patterns {
+		for _, piece := range strings.Split(item, ",") {
+			trimmed := strings.ToLower(strings.TrimSpace(piece))
+			if trimmed != "" {
+				wanted = append(wanted, trimmed)
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return models
+	}
+	out := make([]ModelInfo, 0, len(models))
+	for _, model := range models {
+		id := strings.ToLower(strings.TrimSpace(model.ID))
+		for _, pattern := range wanted {
+			if pattern == id || matchesGlob(pattern, id) {
+				out = append(out, model)
+				break
+			}
+		}
+	}
+	return out
+}

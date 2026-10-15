@@ -35,6 +35,15 @@ type pluginState struct {
 	// rotator carries the CodeBuddy key rotation state: fresh keys are served
 	// round-robin and a rejected key is cooled down.
 	rotator *keyRotator
+
+	// expose narrows the advertised roster to matching ids. Empty means no
+	// restriction.
+	expose []string
+
+	// credentialDirPath overrides where this plugin keeps its own credential
+	// documents. Setting it matters in a container: only mounted paths survive a
+	// recreation.
+	credentialDirPath string
 }
 
 func newPluginState() *pluginState {
@@ -88,6 +97,16 @@ func (g *gateway) Metadata() cpakit.Metadata {
 				Description: "How long a fetched model catalog is reused before it is read again.",
 			},
 			{
+				Name:        "credential_dir",
+				Type:        cpakit.FieldString,
+				Description: "Directory holding this plugin's credential documents. Set it to a mounted path in a container.",
+			},
+			{
+				Name:        "expose",
+				Type:        cpakit.FieldArray,
+				Description: "Only advertise models matching these patterns (e.g. 'deepseek-v4.1-flash'). Empty advertises everything.",
+			},
+			{
 				Name:        "key_cooldown_seconds",
 				Type:        cpakit.FieldInteger,
 				Description: "How long a rejected CodeBuddy key is skipped before it is tried again.",
@@ -127,6 +146,12 @@ func (g *gateway) Configure(configYAML []byte) error {
 		g.impl.rotator.setCooldown(time.Duration(cooldown) * time.Second)
 	} else {
 		g.impl.rotator.setCooldown(defaultKeyCooldown)
+	}
+	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
+		g.impl.expose = patterns
+	}
+	if dir := cfg.String("credential_dir", ""); strings.TrimSpace(dir) != "" {
+		g.impl.credentialDirPath = strings.TrimSpace(dir)
 	}
 	return nil
 }
@@ -267,7 +292,8 @@ func (g *gateway) StaticModels(ctx context.Context, req cpakit.StaticModelReques
 		return g.impl.rosterForKind(ctx, kind)
 	})
 	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
-	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.FilterModelsByExclusion(models, excluded)}, nil
+	models = cpakit.FilterModelsByExclusion(models, excluded)
+	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(models, g.impl.expose)}, nil
 }
 
 // ModelsForAuth reports the roster one credential can actually drive.
@@ -284,10 +310,10 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest
 	models, errModels := g.impl.modelsForKind(ctx, kind, creds)
 	if errModels != nil {
 		filtered := cpakit.FilterModelsByExclusion(staticFallback(kind), req.Host.ExcludedModels[providerKey])
-		return cpakit.ModelResponse{Provider: providerKey, Models: filtered}, nil
+		return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(filtered, g.impl.expose)}, nil
 	}
 	filtered := cpakit.FilterModelsByExclusion(models, cpakit.ExcludedModelsFor(req.Host, providerKey))
-	return cpakit.ModelResponse{Provider: providerKey, Models: filtered}, nil
+	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(filtered, g.impl.expose)}, nil
 }
 
 // RegisterModels reports the live rosters. The host only calls this when a
@@ -297,7 +323,7 @@ func (g *gateway) RegisterModels(ctx context.Context, _ cpakit.ModelRegistration
 	models := visibleRoster(nil, func(kind *credentialKind) []cpakit.ModelInfo {
 		return g.impl.rosterForKind(ctx, kind)
 	})
-	return cpakit.ModelRegistrationResponse{Provider: providerKey, Models: models}, nil
+	return cpakit.ModelRegistrationResponse{Provider: providerKey, Models: cpakit.ExposeOnly(models, g.impl.expose)}, nil
 }
 
 // RegisterManagement declares the plugin's diagnostic route.

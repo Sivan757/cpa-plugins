@@ -57,6 +57,11 @@ func (g *gateway) Metadata() cpakit.Metadata {
 				Description: "Which Qoder deployment this credential belongs to: global (qoder.sh) or china (qoder.com.cn).",
 			},
 			{
+				Name:        "expose",
+				Type:        cpakit.FieldArray,
+				Description: "Only advertise models matching these patterns (e.g. 'qwen3.8-flash'). Empty advertises everything.",
+			},
+			{
 				Name:        "cache_ttl_seconds",
 				Type:        cpakit.FieldInteger,
 				Description: "How long a fetched model catalog is reused before it is read again.",
@@ -94,6 +99,9 @@ func (g *gateway) Configure(configYAML []byte) error {
 	p.cfg.region = strings.TrimSpace(cfg.String("region", ""))
 	if ttl := cfg.Int("cache_ttl_seconds", 0); ttl > 0 {
 		p.cache.setTTL(time.Duration(ttl) * time.Second)
+	}
+	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
+		p.expose = patterns
 	}
 	return nil
 }
@@ -251,10 +259,10 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest
 		g.impl.recordError(errModels)
 		return cpakit.ModelResponse{
 			Provider: providerKey,
-			Models:   mustStaticRoutes(regionFor(firstNonEmpty(req.Attributes["region"], g.impl.cfg.region))),
+			Models:   cpakit.ExposeOnly(mustStaticRoutes(regionFor(firstNonEmpty(req.Attributes["region"], g.impl.cfg.region))), g.impl.expose),
 		}, nil
 	}
-	return cpakit.ModelResponse{Provider: providerKey, Models: models}, nil
+	return cpakit.ModelResponse{Provider: providerKey, Models: cpakit.ExposeOnly(models, g.impl.expose)}, nil
 }
 
 // RegisterModels contributes nothing: ModelProvider already registers the live
