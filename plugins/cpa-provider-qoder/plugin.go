@@ -12,7 +12,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.2.0"
+var pluginVersion = "0.3.0"
 
 // providerKey is the single credential provider key this plugin serves.
 //
