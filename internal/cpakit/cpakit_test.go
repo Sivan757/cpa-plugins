@@ -270,3 +270,27 @@ func TestExposeOnlyNarrowsTheRoster(t *testing.T) {
 		t.Fatalf("a non-matching allowlist exposed %d models", len(none))
 	}
 }
+
+// TestConfigParsesTheHostRuntimeYAML pins the shape the host actually sends: a
+// mapping that carries enabled and priority alongside the plugin's own keys, and
+// a sequence under a plugin key.
+func TestConfigParsesTheHostRuntimeYAML(t *testing.T) {
+	hostYAML := []byte("api_key: \"oc_sk_test\"\nenabled: true\nexpose:\n    - \"*-free\"\npriority: 10\n")
+	cfg, errParse := ParseConfig(hostYAML)
+	if errParse != nil {
+		t.Fatalf("parse host config: %v", errParse)
+	}
+	patterns := cfg.Strings("expose")
+	if len(patterns) != 1 || patterns[0] != "*-free" {
+		t.Fatalf("expose = %#v, want [*-free]", patterns)
+	}
+	if got := cfg.String("api_key", ""); got != "oc_sk_test" {
+		t.Fatalf("api_key = %q", got)
+	}
+	if got := cfg.Int("priority", 0); got != 10 {
+		t.Fatalf("priority = %d", got)
+	}
+	if !cfg.Bool("enabled", false) {
+		t.Fatal("enabled = false")
+	}
+}

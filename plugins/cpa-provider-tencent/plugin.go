@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -153,6 +154,8 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if dir := cfg.String("credential_dir", ""); strings.TrimSpace(dir) != "" {
 		g.impl.credentialDirPath = strings.TrimSpace(dir)
 	}
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
+		"tencent: configured expose=%v credentialDir=%q", g.impl.expose, g.impl.credentialDir()))
 	return nil
 }
 

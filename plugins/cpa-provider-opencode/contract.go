@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -114,6 +115,8 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
 		g.impl.expose = patterns
 	}
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
+		"opencode: configured expose=%v freeEnabled=%t goKeys=%d", g.impl.expose, g.impl.freeEnabled, len(g.impl.apiKeys)))
 	g.impl.materializeTiers()
 	return nil
 }

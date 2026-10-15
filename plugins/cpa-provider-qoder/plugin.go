@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -103,6 +104,7 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
 		p.expose = patterns
 	}
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf("qoder: configured expose=%v region=%q", p.expose, p.cfg.region))
 	return nil
 }
 
