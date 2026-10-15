@@ -117,26 +117,26 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if errParse != nil {
 		return errParse
 	}
-	if raw := cfg.String("api_key", ""); raw != "" {
-		g.impl.apiKeys = splitKeys(raw)
-	}
-	if raw := cfg.String("free_enabled", ""); raw != "" {
-		g.impl.freeEnabled = !strings.EqualFold(raw, "false")
-	}
-	if version := cfg.String("user_agent_version", ""); version != "" {
-		g.impl.version = version
-	}
-	if base := cfg.String("base_url", ""); base != "" {
-		g.impl.baseURL = strings.TrimSuffix(base, "/")
-	}
-	if base := cfg.String("go_base_url", ""); base != "" {
-		g.impl.goURL = strings.TrimSuffix(base, "/")
-	}
-	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
-		g.impl.expose = patterns
-	}
-	if dir := cfg.String("credential_dir", ""); strings.TrimSpace(dir) != "" {
-		g.impl.credentialDir = strings.TrimSpace(dir)
+	// Every field is recomputed from its default on each configure. A value
+	// removed from the configuration must revert: assigning only when a key is
+	// present leaves the previous value in place, which makes a field impossible
+	// to clear without restarting the core.
+	impl := g.impl
+	impl.apiKeys = splitKeys(cfg.String("api_key", ""))
+	impl.freeEnabled = cfg.Bool("free_enabled", true)
+	impl.expose = cfg.Strings("expose")
+	impl.credentialDir = strings.TrimSpace(cfg.String("credential_dir", ""))
+	impl.baseURL = strings.TrimSuffix(cfg.String("base_url", ""), "/")
+	impl.goURL = strings.TrimSuffix(cfg.String("go_base_url", ""), "/")
+
+	// The user agent decides whether the free tier answers at all, so an explicit
+	// version wins and the published one is discovered once to fill the gap.
+	// Resolving on every configure would put a network call in the reload path.
+	if version := strings.TrimSpace(cfg.String("user_agent_version", "")); version != "" {
+		impl.version = version
+	} else if !impl.versionResolved {
+		impl.version = resolveClientVersion(context.Background())
+		impl.versionResolved = true
 	}
 
 	// The account credential is loaded from disk and then overridden by anything

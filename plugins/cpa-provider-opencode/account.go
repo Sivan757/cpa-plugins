@@ -245,6 +245,9 @@ func (a *accountAuth) renewAgainst(ctx context.Context, url string) error {
 		RefreshToken string `json:"refresh_token"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int64  `json:"expires_in"`
+		// OrgID is the workspace the renewed token is metered against. The
+		// console returns it, so a renewal also repairs a missing or stale id.
+		OrgID string `json:"org_id"`
 	}
 	result, errCall := accountHTTPJSON(ctx, http.MethodPost, url, headers, request, &response)
 	if errCall != nil {
@@ -263,6 +266,9 @@ func (a *accountAuth) renewAgainst(ctx context.Context, url string) error {
 	a.access = strings.TrimSpace(response.AccessToken)
 	if strings.TrimSpace(response.RefreshToken) != "" {
 		a.refresh = strings.TrimSpace(response.RefreshToken)
+	}
+	if value := strings.TrimSpace(response.OrgID); value != "" {
+		a.orgID = value
 	}
 	expiresIn := response.ExpiresIn
 	if expiresIn <= 0 {

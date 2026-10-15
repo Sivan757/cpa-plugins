@@ -101,9 +101,9 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if ttl := cfg.Int("cache_ttl_seconds", 0); ttl > 0 {
 		p.cache.setTTL(time.Duration(ttl) * time.Second)
 	}
-	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
-		p.expose = patterns
-	}
+	// Recomputed rather than only assigned when present, so removing the key from
+	// the configuration clears the allowlist instead of leaving the old one.
+	p.expose = cfg.Strings("expose")
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf("qoder: configured expose=%v region=%q", p.expose, p.cfg.region))
 	return nil
 }

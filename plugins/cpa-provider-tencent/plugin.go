@@ -148,12 +148,10 @@ func (g *gateway) Configure(configYAML []byte) error {
 	} else {
 		g.impl.rotator.setCooldown(defaultKeyCooldown)
 	}
-	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
-		g.impl.expose = patterns
-	}
-	if dir := cfg.String("credential_dir", ""); strings.TrimSpace(dir) != "" {
-		g.impl.credentialDirPath = strings.TrimSpace(dir)
-	}
+	// Recomputed rather than only assigned when present: a key removed from the
+	// configuration must revert, or the previous value outlives it.
+	g.impl.expose = cfg.Strings("expose")
+	g.impl.credentialDirPath = strings.TrimSpace(cfg.String("credential_dir", ""))
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
 		"tencent: configured expose=%v credentialDir=%q", g.impl.expose, g.impl.credentialDir()))
 	return nil

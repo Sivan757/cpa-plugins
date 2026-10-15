@@ -104,6 +104,9 @@ type pluginState struct {
 	// config values, refreshed on every plugin.reconfigure.
 	apiKeys     []string
 	freeEnabled bool
+	// versionResolved records that the published CLI version was discovered, so
+	// the lookup runs once rather than on every reconfigure.
+	versionResolved bool
 	// expose narrows the advertised roster to matching ids. Empty means no
 	// restriction.
 	expose []string
