@@ -346,3 +346,58 @@ func TestAccountApplyPrefersConfiguredValues(t *testing.T) {
 		t.Fatalf("first-run configuration was ignored: %q / %q", fresh.access, fresh.refresh)
 	}
 }
+
+// TestWorkspaceIsDiscoveredWhenTheLoginOmitsIt covers the credential a device
+// login produces: the token is valid but no workspace id comes back, and every
+// console call is refused without one. The plugin resolves it from the token
+// rather than sending a request the upstream rejects.
+func TestWorkspaceIsDiscoveredWhenTheLoginOmitsIt(t *testing.T) {
+	usePlainTransport(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			t.Errorf("method = %s", request.Method)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer st_valid" {
+			t.Errorf("authorization = %q", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[{"id":"org_discovered","name":"Personal","avatarUrl":null}]`))
+	}))
+	defer server.Close()
+
+	previousURL := accountOrgsURL
+	accountOrgsURL = server.URL
+	t.Cleanup(func() { accountOrgsURL = previousURL })
+
+	dir := t.TempDir()
+	auth := &accountAuth{dir: dir, access: "st_valid", expires: time.Now().Add(24 * time.Hour)}
+
+	_, orgID, errCredentials := auth.credentials(context.Background())
+	if errCredentials != nil {
+		t.Fatalf("credentials: %v", errCredentials)
+	}
+	if orgID != "org_discovered" {
+		t.Fatalf("orgID = %q, want the discovered workspace", orgID)
+	}
+
+	// The discovery must be persisted: losing it re-runs the lookup on every start.
+	raw, errRead := os.ReadFile(filepath.Join(dir, "opencode-account.json"))
+	if errRead != nil {
+		t.Fatalf("read persisted credential: %v", errRead)
+	}
+	var doc accountDocument
+	if errUnmarshal := json.Unmarshal(raw, &doc); errUnmarshal != nil {
+		t.Fatalf("decode persisted credential: %v", errUnmarshal)
+	}
+	if doc.OrgID != "org_discovered" {
+		t.Fatalf("persisted org = %q", doc.OrgID)
+	}
+
+	// A configured workspace wins, so the lookup does not run again.
+	auth.apply("", "", "org_configured", true)
+	if _, org, errConfigured := auth.credentials(context.Background()); errConfigured != nil {
+		t.Fatalf("credentials: %v", errConfigured)
+	} else if org != "org_configured" {
+		t.Fatalf("org = %q, want the configured workspace", org)
+	}
+}

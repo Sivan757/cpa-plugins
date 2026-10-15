@@ -31,6 +31,12 @@ const (
 	sessionTokenPrefix = "st_"
 	// refreshURL exchanges a refresh token for a new session token.
 	refreshURL = "https://opencode.ai/console/auth/device/token"
+	// orgsURL lists the workspaces a session token may act in.
+	//
+	// A device login returns no workspace id, and every console call needs one in
+	// x-org-id, so the id is discovered here instead of asking the operator for a
+	// value only the console knows.
+	orgsURL = "https://opencode.ai/console/api/orgs"
 	// refreshClientID is the client identifier the CLI sends.
 	refreshClientID = "opencode-cli"
 	// refreshMargin renews this long before the stated expiry, so a request
@@ -44,6 +50,10 @@ const (
 // variable because the host bridge it normally routes through exists only inside
 // CPA, so a unit test substitutes a plain HTTP client to drive the flow offline.
 var accountHTTPJSON = cpakit.HTTPJSON
+
+// accountOrgsURL lists the workspaces. It is a variable so a unit test can point
+// the lookup at a local server instead of the live console.
+var accountOrgsURL = orgsURL
 
 // accountDocument is the persisted account credential. The upstream rotates both
 // tokens on every renewal, so this file is the plugin's own copy: the host auth
@@ -210,8 +220,65 @@ func (a *accountAuth) credentials(ctx context.Context) (string, string, error) {
 	}
 
 	a.mu.Lock()
+	access := a.access
+	orgID := a.orgID
+	a.mu.Unlock()
+
+	// Every console call needs a workspace, and a device login does not return
+	// one, so resolve it from the token rather than sending a request without it.
+	if strings.TrimSpace(orgID) == "" && strings.TrimSpace(access) != "" {
+		if discovered := a.discoverOrg(ctx, access); discovered != "" {
+			a.mu.Lock()
+			a.orgID = discovered
+			doc := accountDocument{
+				Type:         providerKey,
+				AccessToken:  a.access,
+				RefreshToken: a.refresh,
+				OrgID:        a.orgID,
+				ExpiresAt:    a.expires.UnixMilli(),
+				Source:       "org-discovery",
+			}
+			path := a.documentPath()
+			a.mu.Unlock()
+			cpakit.HostLog(ctx, "info", "opencode: discovered workspace "+discovered)
+			a.persist(path, doc)
+			orgID = discovered
+		}
+	}
+
+	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.access, a.orgID, nil
+	return a.access, orgID, nil
+}
+
+// discoverOrg lists the workspaces the session token may act in and returns the
+// first id. A device login carries none, and a console call without one is
+// refused with OrgRequired.
+func (a *accountAuth) discoverOrg(ctx context.Context, access string) string {
+	headers := http.Header{}
+	headers.Set("Accept", "application/json")
+	headers.Set("Authorization", "Bearer "+access)
+	headers.Set("User-Agent", "opencode/"+versionFallback)
+
+	var orgs []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	result, errCall := accountHTTPJSON(ctx, http.MethodGet, accountOrgsURL, headers, nil, &orgs)
+	if errCall != nil {
+		cpakit.HostLog(ctx, "warn", "opencode: could not list workspaces: "+errCall.Error())
+		return ""
+	}
+	if result != nil && result.StatusCode != http.StatusOK {
+		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: workspace lookup answered HTTP %d", result.StatusCode))
+		return ""
+	}
+	for _, org := range orgs {
+		if id := strings.TrimSpace(org.ID); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // renew exchanges the refresh token for a new session token and persists the

@@ -129,6 +129,12 @@ POST https://opencode.ai/console/auth/device/token
 # -> {"access_token":"st_...","refresh_token":"rt_...","expires_in":2592000,"org_id":"org_..."}
 ```
 
+**专用账号。** 免费层凭据应当由一个专用账号持有，不要与日常登录共用。线上插件会持续续期并轮换令牌，而轮换会作废被替换的那一对；同一个账号若同时被本机 CLI 和插件使用，先续期的一方会让另一方的凭据失效。
+
+当前专用账号是 lizf@zealwon.com，工作区 org_01M4WW41D9KRDYJAFN674ATAWX（Personal）。
+
+**工作区 id 会自动发现。** device 登录的令牌响应不带 org_id，而控制台的每次调用都要求 x-org-id。插件在缺少工作区时会调 GET /console/api/orgs（带 Bearer 令牌）取第一个工作区并落盘，所以新账号登录后不需要手工填这个值。
+
 上游每次续期都会**轮换两个令牌并作废旧令牌**（旧 refresh token 再用报 `invalid_grant`）。因此同一凭据只能有一个所有者：不要让 CLI 和插件同时续期同一个账号，否则先续期的一方会把另一方的令牌作废。插件把轮换后的凭据写入 `credential_dir/opencode-account.json`，并且该文件优先于配置项，避免配置里的旧令牌在重载时覆盖已轮换的凭据。
 
 配置项 `session_token` / `refresh_token` / `org_id` 只是首次启动的引导值；`credential_dir` 必须指向挂载路径，否则容器重建会丢失轮换后的凭据。
