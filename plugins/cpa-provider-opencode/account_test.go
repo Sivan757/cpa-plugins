@@ -79,7 +79,8 @@ func TestFreeTierHeadersCarryAccountCredential(t *testing.T) {
 	state.account = &accountAuth{access: "st_test_token", orgID: "wrk_test_org", expires: time.Now().Add(24 * time.Hour)}
 	plan := &executionPlan{tier: tierFree, baseURL: state.freeRoot(), key: "st_test_token", orgID: "wrk_test_org", model: "mimo-v2.6-flash-free"}
 
-	headers := state.requestHeaders(plan, "conversation")
+	lane := executionLane{label: "account", key: "st_test_token", orgID: "wrk_test_org"}
+	headers := state.requestHeaders(plan, lane, "conversation")
 	if got := headers.Get("Authorization"); got != "Bearer st_test_token" {
 		t.Fatalf("Authorization = %q", got)
 	}
@@ -89,11 +90,41 @@ func TestFreeTierHeadersCarryAccountCredential(t *testing.T) {
 	if got := headers.Get("x-opencode-session"); got == "" {
 		t.Fatal("the session identifier is missing")
 	}
+	// The account lane keeps the correlation header.
+	if got := headers.Get("x-opencode-request"); got == "" {
+		t.Fatal("the account lane must keep x-opencode-request")
+	}
 }
 
-// TestPlanForUsesTheAccountCredential proves planFor resolves the free tier to
-// the account token rather than the retired anonymous one.
-func TestPlanForUsesTheAccountCredential(t *testing.T) {
+// TestKeylessLaneOmitsTheRequestHeader pins the one header difference between the
+// lanes. The keyless credential is refused with x-opencode-request present, so
+// sending it there would break the preferred lane.
+func TestKeylessLaneOmitsTheRequestHeader(t *testing.T) {
+	state := newPluginState()
+	plan := &executionPlan{tier: tierFree, model: "mimo-v2.6-flash-free"}
+	lane := executionLane{label: "anonymous", key: publicCredential, anonymous: true}
+
+	headers := state.requestHeaders(plan, lane, "conversation")
+	if got := headers.Get("x-opencode-request"); got != "" {
+		t.Fatalf("x-opencode-request = %q, want it absent on the keyless lane", got)
+	}
+	if got := headers.Get("Authorization"); got != "Bearer public" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := headers.Get(orgHeader); got != "" {
+		t.Fatalf("%s = %q, want it absent without a workspace", orgHeader, got)
+	}
+	// The rest of the fingerprint stays, because the keyless lane still gates on it.
+	for _, name := range []string{"x-opencode-client", "x-opencode-session", "x-opencode-session-id", "x-opencode-project"} {
+		if got := headers.Get(name); got == "" {
+			t.Fatalf("%s is missing on the keyless lane", name)
+		}
+	}
+}
+
+// TestPlanForPrefersTheKeylessLane proves the free tier tries the credential
+// that needs no account first, and keeps the account only as a fallback.
+func TestPlanForPrefersTheKeylessLane(t *testing.T) {
 	state := newPluginState()
 	state.account = &accountAuth{access: "st_from_state", orgID: "wrk_from_state", expires: time.Now().Add(24 * time.Hour)}
 	state.freeEnabled = true
@@ -106,20 +137,27 @@ func TestPlanForUsesTheAccountCredential(t *testing.T) {
 	if errPlan != nil {
 		t.Fatalf("planFor: %v", errPlan)
 	}
-	if plan.key != "st_from_state" {
-		t.Fatalf("key = %q, want the account token", plan.key)
+	if len(plan.lanes) != 2 {
+		t.Fatalf("%d lanes, want the keyless lane and the account fallback", len(plan.lanes))
 	}
-	if plan.orgID != "wrk_from_state" {
-		t.Fatalf("orgID = %q", plan.orgID)
+	if plan.lanes[0].key != publicCredential || !plan.lanes[0].anonymous {
+		t.Fatalf("first lane = %+v, want the keyless credential", plan.lanes[0])
+	}
+	if plan.lanes[1].key != "st_from_state" || plan.lanes[1].orgID != "wrk_from_state" {
+		t.Fatalf("second lane = %+v, want the account credential", plan.lanes[1])
+	}
+	// The plan's own key mirrors the preferred lane.
+	if plan.key != publicCredential {
+		t.Fatalf("key = %q, want the preferred lane's credential", plan.key)
 	}
 	if plan.baseURL != freeBaseURL {
 		t.Fatalf("baseURL = %q", plan.baseURL)
 	}
 }
 
-// TestPlanForKeepsTheAnonymousFallback proves an unconfigured account does not
-// fail locally: the request reaches upstream so the refusal names the real cause.
-func TestPlanForKeepsTheAnonymousFallback(t *testing.T) {
+// TestPlanForUsesOnlyTheKeylessLaneWithoutAnAccount proves an unconfigured
+// account does not fail locally and does not add an empty lane.
+func TestPlanForUsesOnlyTheKeylessLaneWithoutAnAccount(t *testing.T) {
 	state := newPluginState()
 	state.account = &accountAuth{}
 	plan, errPlan := state.planFor(context.Background(), cpakit.ExecutorRequest{
@@ -130,8 +168,11 @@ func TestPlanForKeepsTheAnonymousFallback(t *testing.T) {
 	if errPlan != nil {
 		t.Fatalf("planFor: %v", errPlan)
 	}
+	if len(plan.lanes) != 1 {
+		t.Fatalf("%d lanes, want only the keyless lane", len(plan.lanes))
+	}
 	if plan.key != publicCredential {
-		t.Fatalf("key = %q, want the anonymous fallback", plan.key)
+		t.Fatalf("key = %q, want the keyless credential", plan.key)
 	}
 }
 

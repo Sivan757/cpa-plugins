@@ -200,6 +200,25 @@ func openingMessageDigest(req cpakit.ExecutorRequest) string {
 }
 
 // executionPlan is everything one request needs after routing resolved.
+// executionLane is one credential the free tier accepts. A lane is tried in
+// order and the next one covers the failure of the one before it.
+//
+// The tier accepts two: the keyless "public" credential, which every OpenCode
+// install carries, and an account session token metered against one workspace.
+// They are not interchangeable on the wire: the keyless lane refuses the
+// x-opencode-request header that the account lane sends.
+type executionLane struct {
+	// label names the lane in logs.
+	label string
+	// key is the bearer credential.
+	key string
+	// orgID is the workspace an account lane is metered against. It travels in
+	// its own header, not in the credential.
+	orgID string
+	// anonymous marks the keyless lane, which omits x-opencode-request.
+	anonymous bool
+}
+
 type executionPlan struct {
 	tier    string
 	baseURL string
@@ -213,6 +232,8 @@ type executionPlan struct {
 	protocol string
 	// endpoint is the full upstream URL for this request.
 	endpoint string
+	// lanes are the credentials to try, in order. The first is preferred.
+	lanes []executionLane
 }
 
 // planFor resolves the tier, endpoint, credential and model for one request.
@@ -230,24 +251,38 @@ func (p *pluginState) planFor(ctx context.Context, req cpakit.ExecutorRequest) (
 		}
 	}
 	if tier == tierFree {
-		// The free tier stopped accepting the anonymous "public" credential. The
-		// account session token and its workspace id are the accepted pair; when
-		// neither is configured the request keeps the old credential so the
-		// upstream refusal names the real cause instead of failing locally.
+		// The keyless lane is preferred. It needs no account, so there is no
+		// credential to rotate and no workspace to burn, and an account that
+		// shares this tier no longer takes the traffic that gets it flagged.
+		plan.lanes = append(plan.lanes, executionLane{
+			label:     "anonymous",
+			key:       publicCredential,
+			anonymous: true,
+		})
+
+		// The account lane covers the keyless lane's failures: its quota is per
+		// workspace rather than per source address, so it survives an exhausted
+		// shared address.
 		token, orgID, errAccount := p.account.credentials(ctx)
 		if errAccount != nil {
 			return nil, errAccount
 		}
-		plan.key = token
-		plan.orgID = orgID
-		if strings.TrimSpace(token) == "" {
+		if strings.TrimSpace(token) != "" {
+			plan.lanes = append(plan.lanes, executionLane{
+				label: "account",
+				key:   token,
+				orgID: orgID,
+			})
+		} else {
 			cpakit.HostLog(ctx, "warn",
-				"opencode: no account credential configured; the free tier refuses the anonymous credential with FreeTierError")
+				"opencode: no account credential configured; the free tier has only the keyless lane")
 		}
 	}
-	if plan.key == "" {
-		plan.key = publicCredential
+	if len(plan.lanes) == 0 {
+		plan.lanes = append(plan.lanes, executionLane{label: "key", key: plan.key})
 	}
+	plan.key = plan.lanes[0].key
+	plan.orgID = plan.lanes[0].orgID
 	if plan.model == "" {
 		return nil, cpakit.NewError("invalid_request", "no model was requested", http.StatusBadRequest)
 	}
@@ -338,52 +373,81 @@ func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPla
 }
 
 // callChat posts a prepared body and returns the buffered response.
+//
+// Each lane is tried in order. A lane that answers non-2xx gives way to the next
+// one, because the lanes fail for different reasons: the keyless lane is metered
+// per source address, and the account lane per workspace.
 func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*cpakit.HTTPResult, error) {
-	headers := p.requestHeaders(plan, conversationSeed(req))
-	result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, headers, body)
-	if errDo != nil {
-		return nil, cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
+	seed := conversationSeed(req)
+	var lastError error
+	for _, lane := range plan.lanes {
+		headers := p.requestHeaders(plan, lane, seed)
+		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, headers, body)
+		if errDo != nil {
+			lastError = cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
+			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errDo.Error()))
+			continue
+		}
+		if result.StatusCode >= 200 && result.StatusCode < 300 {
+			return result, nil
+		}
+		lastError = classifyUpstreamError(result.StatusCode, result.Body)
+		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, result.StatusCode))
 	}
-	if result.StatusCode < 200 || result.StatusCode >= 300 {
-		return nil, classifyUpstreamError(result.StatusCode, result.Body)
-	}
-	return result, nil
+	return nil, lastError
 }
 
 // openChatStream opens the upstream as a live reader. A non-2xx head is fully
 // known before any body byte, so it is read and classified here.
 func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*cpakit.HTTPStream, error) {
-	headers := p.requestHeaders(plan, conversationSeed(req))
-	stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.endpoint, headers, body)
-	if errOpen != nil {
-		return nil, cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
+	seed := conversationSeed(req)
+	var lastError error
+	for _, lane := range plan.lanes {
+		headers := p.requestHeaders(plan, lane, seed)
+		stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.endpoint, headers, body)
+		if errOpen != nil {
+			lastError = cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
+			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errOpen.Error()))
+			continue
+		}
+		if stream.StatusCode >= 200 && stream.StatusCode < 300 {
+			return stream, nil
+		}
+		raw, errRead := cpakit.ReadStreamBody(stream, 0)
+		status := stream.StatusCode
+		stream.Close()
+		if errRead != nil {
+			lastError = cpakit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
+			cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s body read failed", lane.label))
+			continue
+		}
+		lastError = classifyUpstreamError(status, raw)
+		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, status))
 	}
-	if stream.StatusCode >= 200 && stream.StatusCode < 300 {
-		return stream, nil
-	}
-	raw, errRead := cpakit.ReadStreamBody(stream, 0)
-	status := stream.StatusCode
-	stream.Close()
-	if errRead != nil {
-		return nil, cpakit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
-	}
-	return nil, classifyUpstreamError(status, raw)
+	return nil, lastError
 }
 
 // requestHeaders builds the headers for one chat call, including the
 // fingerprint the free tier gates on.
-func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Header {
+func (p *pluginState) requestHeaders(plan *executionPlan, lane executionLane, seed string) http.Header {
 	session := p.sessions.id(seed)
 	request := p.sessions.requestID()
 	headers := clientHeaders(p.version, session, request)
+	if lane.anonymous {
+		// The keyless lane refuses x-opencode-request, measured against the live
+		// endpoint with every other header held identical: the same request with
+		// that header answers 403 and without it answers 200. The account lane
+		// accepts it, so it is dropped only here.
+		headers.Del("x-opencode-request")
+	}
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
-		"opencode: outbound tier=%s url=%s ua=%s session=%s request=%s",
-		plan.tier, plan.endpoint, "opencode/"+p.version, session, request))
-	headers.Set("Authorization", "Bearer "+plan.key)
-	if strings.TrimSpace(plan.orgID) != "" {
-		// The free tier meters against a workspace and requires this header. The
-		// paid tier ignores it, but it is only ever set for the free tier.
-		headers.Set(orgHeader, plan.orgID)
+		"opencode: outbound tier=%s lane=%s url=%s ua=%s session=%s request=%s",
+		plan.tier, lane.label, plan.endpoint, "opencode/"+p.version, session, request))
+	headers.Set("Authorization", "Bearer "+lane.key)
+	if strings.TrimSpace(lane.orgID) != "" {
+		// The free tier meters an account against a workspace and requires this
+		// header. The keyless lane has no workspace, and the paid tier ignores it.
+		headers.Set(orgHeader, lane.orgID)
 	}
 	return headers
 }
