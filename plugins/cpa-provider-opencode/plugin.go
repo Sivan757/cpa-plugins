@@ -22,6 +22,9 @@ const (
 	freeModelsURL = "https://opencode.ai/inference/v1/models"
 	// goBaseURL serves the paid Go plan: chat completions and its model list.
 	goBaseURL = "https://opencode.ai/inference/go/v1"
+	// responsesBaseURL serves the models the tier publishes only on the Responses
+	// API. Sending one to /chat/completions is refused upstream.
+	responsesBaseURL = "https://opencode.ai/inference/openai/v1/responses"
 )
 
 // catalogTTL keeps a fetched catalogue briefly so the model-list request the

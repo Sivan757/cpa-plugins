@@ -231,6 +231,52 @@ func ForwardStream(callback HostCallback, downStreamID string, stream *HTTPStrea
 	return nil
 }
 
+// ForwardStreamTransform forwards an upstream stream, passing every complete SSE
+// payload through transform, which returns the payloads to emit for that event.
+//
+// A transform returning nothing drops the event. That is how a protocol
+// translation discards the upstream events the downstream protocol has no
+// equivalent for. Returned payloads are emitted as given, so a transform must
+// produce the downstream shape itself.
+func ForwardStreamTransform(callback HostCallback, downStreamID string, stream *HTTPStream, transform func([]byte) [][]byte) error {
+	if stream == nil {
+		return fmt.Errorf("upstream stream is required")
+	}
+	forwarder := &SSEForwarder{}
+	emitted := false
+	for {
+		chunk, done, errRead := stream.Read()
+		if len(chunk) > 0 {
+			for _, payload := range forwarder.Feed(chunk) {
+				for _, translated := range transform(payload) {
+					if errEmit := callback.Emit(downStreamID, translated); errEmit != nil {
+						return errEmit
+					}
+					emitted = true
+				}
+			}
+		}
+		if errRead != nil {
+			return errRead
+		}
+		if done {
+			break
+		}
+	}
+	for _, payload := range forwarder.Flush() {
+		for _, translated := range transform(payload) {
+			if errEmit := callback.Emit(downStreamID, translated); errEmit != nil {
+				return errEmit
+			}
+			emitted = true
+		}
+	}
+	if !emitted {
+		return fmt.Errorf("upstream stream produced no events")
+	}
+	return nil
+}
+
 // ReadStreamBody drains a stream into memory, for the finite bodies that carry
 // an error or a non-streaming answer.
 func ReadStreamBody(stream *HTTPStream, limit int) ([]byte, error) {

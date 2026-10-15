@@ -28,7 +28,15 @@ func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpak
 	if errCall != nil {
 		return cpakit.ExecutorResponse{}, errCall
 	}
-	aggregated, errAggregate := cpakit.AggregateStream(result.Body)
+	// Each upstream family reports its own stream shape, so the buffered answer is
+	// built by the translation that matches the protocol that was used.
+	var aggregated []byte
+	var errAggregate error
+	if plan.protocol == protocolResponses {
+		aggregated, errAggregate = responsesCompletionFromStream(result.Body, plan.model)
+	} else {
+		aggregated, errAggregate = cpakit.AggregateStream(result.Body)
+	}
 	if errAggregate != nil {
 		return cpakit.ExecutorResponse{}, errAggregate
 	}
@@ -71,9 +79,18 @@ func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest,
 		return cpakit.ExecutorStreamResponse{}, errOpen
 	}
 
+	translator := newResponsesTranslator(plan.model)
 	go func() {
 		defer stream.Close()
-		if errForward := cpakit.ForwardStream(callback, streamID, stream); errForward != nil {
+		var errForward error
+		if plan.protocol == protocolResponses {
+			// The upstream speaks the Responses protocol and the client speaks
+			// chat-completions, so each event is converted as it arrives.
+			errForward = cpakit.ForwardStreamTransform(callback, streamID, stream, translator.Translate)
+		} else {
+			errForward = cpakit.ForwardStream(callback, streamID, stream)
+		}
+		if errForward != nil {
 			callback.CloseStream(streamID, cpakit.Redact(errForward.Error()))
 			return
 		}
@@ -191,6 +208,11 @@ type executionPlan struct {
 	// orgID is the workspace the free tier is metered against. It travels in its
 	// own header, not in the credential.
 	orgID string
+	// protocol is the upstream request and response family: chat-completions for
+	// most models, responses for the ones the tier serves only that way.
+	protocol string
+	// endpoint is the full upstream URL for this request.
+	endpoint string
 }
 
 // planFor resolves the tier, endpoint, credential and model for one request.
@@ -228,6 +250,16 @@ func (p *pluginState) planFor(ctx context.Context, req cpakit.ExecutorRequest) (
 	}
 	if plan.model == "" {
 		return nil, cpakit.NewError("invalid_request", "no model was requested", http.StatusBadRequest)
+	}
+
+	// The tier serves some models only on the Responses API. Route those to their
+	// own endpoint and protocol; everything else keeps the chat path.
+	plan.protocol = protocolChat
+	if usesResponsesAPI(plan.model) {
+		plan.protocol = protocolResponses
+		plan.endpoint = p.responsesRoot()
+	} else {
+		plan.endpoint = plan.baseURL + "/chat/completions"
 	}
 	return plan, nil
 }
@@ -288,18 +320,27 @@ func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPla
 		}
 	}
 
+	if plan.protocol == protocolResponses {
+		converted, errConvert := chatToResponses(payload, plan.model)
+		if errConvert != nil {
+			return nil, errConvert
+		}
+		payload = converted
+	}
+
 	encoded, errMarshal := json.Marshal(payload)
 	if errMarshal != nil {
 		return nil, cpakit.NewError("internal_error", "encode chat payload: "+errMarshal.Error(), http.StatusInternalServerError)
 	}
-	cpakit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: outbound body=%s", cpakit.TruncateBody(encoded, 600)))
+	cpakit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: outbound protocol=%s body=%s",
+		plan.protocol, cpakit.TruncateBody(encoded, 600)))
 	return encoded, nil
 }
 
 // callChat posts a prepared body and returns the buffered response.
 func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*cpakit.HTTPResult, error) {
 	headers := p.requestHeaders(plan, conversationSeed(req))
-	result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
+	result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, headers, body)
 	if errDo != nil {
 		return nil, cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
 	}
@@ -313,7 +354,7 @@ func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, 
 // known before any body byte, so it is read and classified here.
 func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*cpakit.HTTPStream, error) {
 	headers := p.requestHeaders(plan, conversationSeed(req))
-	stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.baseURL+"/chat/completions", headers, body)
+	stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.endpoint, headers, body)
 	if errOpen != nil {
 		return nil, cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
 	}
@@ -337,7 +378,7 @@ func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Head
 	headers := clientHeaders(p.version, session, request)
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
 		"opencode: outbound tier=%s url=%s ua=%s session=%s request=%s",
-		plan.tier, plan.baseURL+"/chat/completions", "opencode/"+p.version, session, request))
+		plan.tier, plan.endpoint, "opencode/"+p.version, session, request))
 	headers.Set("Authorization", "Bearer "+plan.key)
 	if strings.TrimSpace(plan.orgID) != "" {
 		// The free tier meters against a workspace and requires this header. The

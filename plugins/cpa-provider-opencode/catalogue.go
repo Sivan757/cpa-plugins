@@ -91,9 +91,6 @@ func buildModelList(entries []map[string]any, tier string) []cpakit.ModelInfo {
 		if tier == tierFree && !isFreeModel(id) {
 			continue
 		}
-		if strings.HasPrefix(id, "muse-spark") {
-			continue
-		}
 		limit := limitFor(id)
 		out = append(out, cpakit.ModelInfo{
 			ID:                        id,

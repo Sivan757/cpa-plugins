@@ -103,6 +103,16 @@ func (p *pluginState) freeRoot() string {
 	return freeBaseURL
 }
 
+// responsesRoot resolves the endpoint for models served only by the Responses
+// API. An explicit base_url override targets the chat root, so the responses
+// path is derived from it to keep a local capture endpoint usable.
+func (p *pluginState) responsesRoot() string {
+	if p.baseURL != "" {
+		return p.baseURL + "/responses"
+	}
+	return responsesBaseURL
+}
+
 // freeCatalogueURL resolves where the free-tier model list is read.
 //
 // The chat base is not the catalogue base: chat posts to .../inference/openai/v1
