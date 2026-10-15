@@ -49,7 +49,27 @@ func (g *gateway) Metadata() cpakit.Metadata {
 			{
 				Name:        "free_enabled",
 				Type:        cpakit.FieldBoolean,
-				Description: "Advertise the anonymous free-tier models (default true).",
+				Description: "Advertise the free-tier models (default true).",
+			},
+			{
+				Name:        "session_token",
+				Type:        cpakit.FieldString,
+				Description: "OpenCode console session token (st_...). The free tier requires it. Read it from a signed-in install or leave it to the refresh token.",
+			},
+			{
+				Name:        "refresh_token",
+				Type:        cpakit.FieldString,
+				Description: "OpenCode refresh token (rt_...). When set, the session token is renewed automatically before it expires.",
+			},
+			{
+				Name:        "org_id",
+				Type:        cpakit.FieldString,
+				Description: "Active OpenCode workspace id (wrk_...). The free tier requires it alongside the session token.",
+			},
+			{
+				Name:        "credential_dir",
+				Type:        cpakit.FieldString,
+				Description: "Directory holding the rotating account credential. Set it to a mounted path in a container.",
 			},
 			{
 				Name:        "user_agent_version",
@@ -115,8 +135,28 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if patterns := cfg.Strings("expose"); len(patterns) > 0 {
 		g.impl.expose = patterns
 	}
+	if dir := cfg.String("credential_dir", ""); strings.TrimSpace(dir) != "" {
+		g.impl.credentialDir = strings.TrimSpace(dir)
+	}
+
+	// The account credential is loaded from disk and then overridden by anything
+	// set explicitly, so a persisted rotation survives a reload while an operator
+	// can still replace the credential from the config.
+	if g.impl.account == nil {
+		g.impl.account = &accountAuth{}
+	}
+	g.impl.account.dir = g.impl.credentialDir
+	g.impl.account.load()
+	g.impl.account.apply(
+		cfg.String("session_token", ""),
+		cfg.String("refresh_token", ""),
+		cfg.String("org_id", ""),
+	)
+
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
-		"opencode: configured expose=%v freeEnabled=%t goKeys=%d", g.impl.expose, g.impl.freeEnabled, len(g.impl.apiKeys)))
+		"opencode: configured expose=%v freeEnabled=%t goKeys=%d account=%t refresh=%t org=%q dir=%q",
+		g.impl.expose, g.impl.freeEnabled, len(g.impl.apiKeys),
+		g.impl.account.configured(), g.impl.account.hasRefresh(), g.impl.account.org(), g.impl.credentialDir))
 	g.impl.materializeTiers()
 	return nil
 }
@@ -326,6 +366,9 @@ func (g *gateway) HandleManagement(ctx context.Context, req cpakit.ManagementReq
 		"goKeyConfigured": len(g.impl.apiKeys) > 0,
 		"freeModelCount":  len(free),
 		"goModelCount":    len(paid),
+		// The free tier needs the account credential; report it so an operator can
+		// see why a free request would be refused without reading the upstream body.
+		"account": g.impl.account.report(),
 	}
 	body, _ := json.MarshalIndent(report, "", "  ")
 	return cpakit.JSONManagementResponse(200, body)

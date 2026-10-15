@@ -16,7 +16,7 @@ import (
 // request that is not streaming, so the upstream call always streams and this
 // path collects the events into one completion.
 func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpakit.ExecutorResponse, error) {
-	plan, errPlan := g.impl.planFor(req)
+	plan, errPlan := g.impl.planFor(ctx, req)
 	if errPlan != nil {
 		return cpakit.ExecutorResponse{}, errPlan
 	}
@@ -46,7 +46,7 @@ func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpak
 // rules; once a 2xx body is streaming, the events are forwarded on a goroutine
 // through the host stream so the upstream's timing survives.
 func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest, streamID string, hostCallbackID string) (cpakit.ExecutorStreamResponse, error) {
-	plan, errPlan := g.impl.planFor(req)
+	plan, errPlan := g.impl.planFor(ctx, req)
 	if errPlan != nil {
 		return cpakit.ExecutorStreamResponse{}, errPlan
 	}
@@ -188,10 +188,13 @@ type executionPlan struct {
 	baseURL string
 	key     string
 	model   string
+	// orgID is the workspace the free tier is metered against. It travels in its
+	// own header, not in the credential.
+	orgID string
 }
 
 // planFor resolves the tier, endpoint, credential and model for one request.
-func (p *pluginState) planFor(req cpakit.ExecutorRequest) (*executionPlan, error) {
+func (p *pluginState) planFor(ctx context.Context, req cpakit.ExecutorRequest) (*executionPlan, error) {
 	if req.AuthProvider != providerKey {
 		return nil, cpakit.NewError("invalid_credential", "selected auth provider is not opencode", http.StatusUnauthorized)
 	}
@@ -202,6 +205,22 @@ func (p *pluginState) planFor(req cpakit.ExecutorRequest) (*executionPlan, error
 		plan.key = keyOf(req.AuthAttributes, req.StorageJSON)
 		if plan.key == "" && len(p.apiKeys) > 0 {
 			plan.key = p.apiKeys[0]
+		}
+	}
+	if tier == tierFree {
+		// The free tier stopped accepting the anonymous "public" credential. The
+		// account session token and its workspace id are the accepted pair; when
+		// neither is configured the request keeps the old credential so the
+		// upstream refusal names the real cause instead of failing locally.
+		token, orgID, errAccount := p.account.credentials(ctx)
+		if errAccount != nil {
+			return nil, errAccount
+		}
+		plan.key = token
+		plan.orgID = orgID
+		if strings.TrimSpace(token) == "" {
+			cpakit.HostLog(ctx, "warn",
+				"opencode: no account credential configured; the free tier refuses the anonymous credential with FreeTierError")
 		}
 	}
 	if plan.key == "" {
@@ -319,10 +338,11 @@ func (p *pluginState) requestHeaders(plan *executionPlan, seed string) http.Head
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
 		"opencode: outbound tier=%s url=%s ua=%s session=%s request=%s",
 		plan.tier, plan.baseURL+"/chat/completions", "opencode/"+p.version, session, request))
-	if plan.tier == tierGo {
-		headers.Set("Authorization", "Bearer "+plan.key)
-	} else {
-		headers.Set("Authorization", "Bearer "+publicCredential)
+	headers.Set("Authorization", "Bearer "+plan.key)
+	if strings.TrimSpace(plan.orgID) != "" {
+		// The free tier meters against a workspace and requires this header. The
+		// paid tier ignores it, but it is only ever set for the free tier.
+		headers.Set(orgHeader, plan.orgID)
 	}
 	return headers
 }

@@ -111,6 +111,14 @@ type pluginState struct {
 	// materialized guards the one-shot auth-record creation.
 	materialized bool
 
+	// account holds the console session token the free tier now requires, plus
+	// the workspace it is metered against.
+	account *accountAuth
+
+	// credentialDir overrides where the rotating account credential is
+	// persisted. A container needs a mounted path so a recreation keeps it.
+	credentialDir string
+
 	// baseURL overrides the free-tier upstream root, for testing against a
 	// local capture endpoint.
 	baseURL string
@@ -129,5 +137,6 @@ func newPluginState() *pluginState {
 		sessions:    newSessionStore(),
 		cache:       map[string]cachedCatalog{},
 		freeEnabled: true,
+		account:     &accountAuth{},
 	}
 }

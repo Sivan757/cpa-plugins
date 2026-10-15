@@ -169,12 +169,43 @@ func clientHeaders(version, session, request string) http.Header {
 	return headers
 }
 
-// requiredTools names the tools whose presence unlocks the free tier. Zen reads
-// the names only; the schemas are never inspected.
+// requiredTools names the tools a free-tier request must declare.
+//
+// Measured against the live endpoint: the list must contain a tool named "read"
+// whose parameter schema declares at least one property, and any declared "bash"
+// must do the same. A placeholder with an empty properties object fails the whole
+// request with FreeTierError, even when every other header and body field matches
+// what the CLI sends. The property names themselves are not checked, but the tool
+// name is: "read" with a single arbitrary property is accepted, and the same
+// schema under another name is not.
 var requiredTools = []string{"bash", "read"}
 
-// placeholderTool builds the argument-free stand-in for a required tool.
+// placeholderProperties is the argument set each placeholder declares. The names
+// match the real CLI tools so a recorded conversation stays readable.
+var placeholderProperties = map[string]map[string]any{
+	"bash": {
+		"command": map[string]any{
+			"type":        "string",
+			"description": "The command to execute",
+		},
+	},
+	"read": {
+		"filePath": map[string]any{
+			"type":        "string",
+			"description": "The absolute path to the file or directory to read",
+		},
+	},
+}
+
+// placeholderTool builds the stand-in declaration for a required tool.
 func placeholderTool(name string) map[string]any {
+	properties, okProperties := placeholderProperties[name]
+	if !okProperties {
+		// An unrecognised required tool still needs a non-empty schema.
+		properties = map[string]any{
+			"argument": map[string]any{"type": "string", "description": "Placeholder argument."},
+		}
+	}
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{
@@ -182,7 +213,7 @@ func placeholderTool(name string) map[string]any {
 			"description": "Placeholder tool declaration required by the OpenCode free tier.",
 			"parameters": map[string]any{
 				"type":                 "object",
-				"properties":           map[string]any{},
+				"properties":           properties,
 				"required":             []any{},
 				"additionalProperties": false,
 			},
