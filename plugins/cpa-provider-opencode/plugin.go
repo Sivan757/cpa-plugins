@@ -48,9 +48,12 @@ type modelLimit struct {
 }
 
 var modelLimits = map[string]modelLimit{
-	"kimi-k3":                     {context: 1048576, output: 131072},
-	"mimo-v2.6-flash-free":        {context: 1048576, output: 32768},
-	"deepseek-v4.1-flash":         {context: 200000, output: 65536},
+	"kimi-k3":              {context: 1048576, output: 131072},
+	"mimo-v2.6-flash-free": {context: 1048576, output: 32768},
+	"deepseek-v4.1-flash":  {context: 200000, output: 65536},
+	// The free variant caps output lower than the paid one, and its context is
+	// the same 200k. models.dev publishes 200000/32000.
+	"deepseek-v4.1-flash-free":    {context: 200000, output: 32000},
 	"deepseek-flash":              {context: 200000, output: 65536},
 	"deepseek-v4-pro":             {context: 200000, output: 65536},
 	"deepseek-v4-flash":           {context: 200000, output: 65536},
