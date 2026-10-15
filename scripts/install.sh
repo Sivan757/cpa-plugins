@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the built plugins into the local EasyCLIProxyAPI (CPA) instance.
+# Install the built plugins into a local CLIProxyAPI (CPA) instance.
 #
 # The script is deliberately conservative: it copies libraries, prints the exact
 # config and auth-file changes the operator still has to make, and never edits
@@ -12,6 +12,11 @@ PLUGIN_DIR="${CPA_PLUGIN_DIR:-$CORE_DIR/plugins}"
 AUTH_DIR="${CPA_AUTH_DIR:-$HOME/.cli-proxy-api}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$REPO_DIR/dist"
+
+# Optional: pass a version to install each library under a versioned name. The
+# host selects a versioned file over an unversioned one, which is the only way to
+# replace a library that is already loaded.
+VERSION="${1:-}"
 
 if [[ ! -d "$CORE_DIR" ]]; then
   echo "error: CPA core directory not found: $CORE_DIR" >&2
@@ -33,11 +38,15 @@ echo "installing into $target"
 
 for library in "${libraries[@]}"; do
   name="$(basename "$library")"
+  if [[ -n "$VERSION" ]]; then
+    stem="${name%.dylib}"
+    name="${stem}-v${VERSION}.dylib"
+  fi
   cp -f "$library" "$target/$name"
   echo "  copied $name"
 done
 
-# Auth files are small JSON stubs that bind a provider key to this plugin.
+# Auth records are small JSON files that bind a provider key to this plugin.
 mkdir -p "$AUTH_DIR"
 
 echo
@@ -47,7 +56,6 @@ echo "1. Enable the plugins in $CORE_DIR/config.yaml:"
 echo
 echo "   plugins:"
 echo "     enabled: true"
-echo "     dir: "plugins""
 echo "     configs:"
 for library in "${libraries[@]}"; do
   id="$(basename "$library" .dylib)"
@@ -56,14 +64,19 @@ for library in "${libraries[@]}"; do
   echo "         priority: 10"
 done
 echo
-echo "2. Create the credential stub for each provider you enabled, in $AUTH_DIR:"
-echo "     workbuddy     -> workbuddy.json      {"type":"workbuddy"}"
-echo "     codebuddy     -> codebuddy.json      {"type":"codebuddy"}"
-echo "     qoder         -> qoder.json         {"type":"qoder"}"
-echo "     trae          -> trae.json           {"type":"trae"}"
+echo "2. Give each provider the auth record it needs, in $AUTH_DIR:"
 echo
-echo "3. Restart the CPA core. Plugin libraries and enabled state are read at startup;"
-echo "   config changes alone do not reload them."
+echo "     opencode -> opencode-free.json         {\"type\":\"opencode\",\"tier\":\"free\"}"
+echo "                 the plugin writes this record itself; add an"
+echo "                 api_key in the config block for the paid Go tier"
+echo "     qoder    -> qoder.json                 {\"type\":\"qoder\",\"pat\":\"<token>\",\"region\":\"china\"}"
+echo "     tencent  -> tencent-workbuddy-ai.json  {\"type\":\"tencent\",\"kind\":\"workbuddy-ai\"}"
+echo
+echo "3. Apply the config. A content change reloads the core in place, so no restart"
+echo "   is needed. A plugin library is replaced only when the selected file path"
+echo "   changes; rerun this script with a version argument to do that:"
+echo
+echo "     scripts/install.sh 0.4.0"
 echo
 echo "Verify afterwards:"
 echo "   curl -s -H 'Authorization: Bearer <management-key>' http://127.0.0.1:8317/v0/management/plugins"

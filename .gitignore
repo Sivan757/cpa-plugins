@@ -1,4 +1,6 @@
-# Build artifacts
+# Build outputs. Rebuild with "make build" (host) or "make build-linux" (server).
 dist/
-dist/
+dist-linux/
+
+# A c-shared build without -o drops a binary next to the package.
 plugins/*/cpa-provider-*
