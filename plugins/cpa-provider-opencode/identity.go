@@ -150,21 +150,27 @@ func resolveClientVersion(ctx context.Context) string {
 
 // clientHeaders builds the identity every Zen request carries.
 //
-// The free tier gates on this shape: the CLI user agent, a session identifier
-// in the OpenCode format, and a per-turn request identifier. The paid tier
-// accepts the same headers and adds its API key.
+// The set is exactly what the CLI sends, because the free tier refuses a
+// fingerprint it does not recognise. Two headers that look like they belong to
+// that identity are refused outright, measured against the live endpoint with
+// every other value held identical:
+//
+//	HTTP-Referer: https://opencode.ai   -> 403 FreeTierError
+//	x-session-affinity: ses_...         -> 403 FreeTierError
+//
+// A request with the same token, workspace, session id, body and user agent but
+// without those two answers 200. The header name is the trigger, not the value:
+// a different referer is refused as well, while an unrelated header is not.
+// X-Session-Id is accepted but the CLI does not send it, so it is left out.
 func clientHeaders(version, session, request string) http.Header {
 	headers := http.Header{}
 	headers.Set("User-Agent", "opencode/"+version)
 	headers.Set("Accept", "application/json")
 	headers.Set("Content-Type", "application/json")
-	headers.Set("HTTP-Referer", "https://opencode.ai")
 	headers.Set("x-opencode-client", "cli")
 	headers.Set("x-opencode-project", "global")
 	headers.Set("x-opencode-session", session)
 	headers.Set("x-opencode-session-id", session)
-	headers.Set("x-session-affinity", session)
-	headers.Set("X-Session-Id", session)
 	headers.Set("x-opencode-request", request)
 	return headers
 }
