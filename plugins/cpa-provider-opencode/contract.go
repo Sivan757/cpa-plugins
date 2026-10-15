@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.10.0"
+var pluginVersion = "0.11.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -145,6 +145,10 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if g.impl.account == nil {
 		g.impl.account = &accountAuth{}
 	}
+	// Clear first, so a credential removed from both the configuration and the
+	// document stops being used. Without this, load and apply only ever add a
+	// value and the account survives every reload.
+	g.impl.account.clear()
 	g.impl.account.dir = g.impl.credentialDir
 	// A persisted document carries the post-rotation tokens, so it outranks the
 	// configuration; the configuration bootstraps the first run.

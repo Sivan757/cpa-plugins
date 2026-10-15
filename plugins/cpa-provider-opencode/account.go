@@ -178,6 +178,22 @@ func (a *accountAuth) load() bool {
 // source, so it wins. Once a rotation has been persisted the file holds the
 // current pair, so the configuration only fills values the file lacks. An
 // operator who needs to replace a credential deletes the document.
+// clear drops every credential this object holds.
+//
+// Configure reuses one accountAuth across reconfigurations, and load and apply
+// only ever set a value. Without this, a credential that an operator removes
+// from the configuration keeps serving requests until the process restarts, so
+// no reload can retire an account.
+func (a *accountAuth) clear() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.access = ""
+	a.refresh = ""
+	a.orgID = ""
+	a.expires = time.Time{}
+	a.loadWarning = ""
+}
+
 func (a *accountAuth) apply(access, refresh, orgID string, override bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
