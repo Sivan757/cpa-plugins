@@ -178,6 +178,22 @@ scp ~/.dsh-cpa/static-workbuddy-ai.json <server>:/opt/cliproxyapi/data/dsh-cpa/
 
 **区域限制。** muse-spark 有区域限制，上游按请求来源 IP 判断。实测同一账号从中国大陆被拒（This model is not available in your country），从服务器所在地可以正常调用。
 
+## 免费层模型与上下文
+
+免费层的模型由上游目录决定，插件用 expose 白名单收窄。当前线上暴露的免费模型：
+
+| 模型 | 上下文 | 输出上限 |
+|---|---|---|
+| deepseek-v4.1-flash-free | 200k（文档值） | 32000 |
+| mimo-v2.6-flash-free | 1M | 32768 |
+| space-bunny-free | 200k | 32768 |
+| step-5-preview-free | 200k | 32768 |
+| muse-spark-1.3-contributor-free | 1M | 131072 |
+
+**文档值不是硬上限。** deepseek-v4.1-flash-free 的文档上下文是 200k，实测网关接受约 711k 输入 token 并正常作答。网关只能证明它收下了这些 token，不能证明模型真的用满了，所以按文档值规划上下文更稳妥。
+
+**推理会吃输出预算。** 这个模型是推理模型。输出上限设成 32 时，思考用完全部预算，正文为空但状态仍是 200。给足输出（实测 2000）就能拿到正文。
+
 ## 上游端点
 
 插件按官方 Console API 文档使用端点（https://opencode.ai/v2/docs/console/api/inference/）：
