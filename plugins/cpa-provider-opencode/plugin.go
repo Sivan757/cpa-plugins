@@ -141,6 +141,50 @@ type pluginState struct {
 	baseURL string
 	// goURL overrides the paid-tier upstream root.
 	goURL string
+
+	// limit remembers a drained free-tier allowance so later requests stop
+	// reaching upstream before it resets.
+	limit quotaLimit
+}
+
+// quotaLimit holds the instant a drained free-tier allowance resets.
+//
+// The tier answers a drained allowance with HTTP 429, a FreeUsageLimitError body
+// and a Retry-After that counts down to midnight UTC. Every lane shares that
+// allowance, so once all lanes report it, repeating the request spends upstream
+// calls only to be told the same thing again.
+type quotaLimit struct {
+	mu    sync.Mutex
+	until time.Time
+}
+
+// remaining reports the reset instant while the allowance is still drained.
+func (q *quotaLimit) remaining(now time.Time) (time.Time, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.until.IsZero() || !now.Before(q.until) {
+		return time.Time{}, false
+	}
+	return q.until, true
+}
+
+// record stores the reset instant, keeping the later one when both are known.
+func (q *quotaLimit) record(until time.Time) {
+	if until.IsZero() {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if until.After(q.until) {
+		q.until = until
+	}
+}
+
+// clear forgets the drained state, which a successful request disproves.
+func (q *quotaLimit) clear() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.until = time.Time{}
 }
 
 type cachedCatalog struct {

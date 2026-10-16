@@ -94,9 +94,19 @@ func TestClassifyUpstreamError(t *testing.T) {
 	if upgrade.Code != "client_version_too_old" {
 		t.Fatalf("UpgradeRequired mapped to %q, want client_version_too_old", upgrade.Code)
 	}
+	// A drained daily allowance is not a transient burst limit. It reports its
+	// own class, because the plugin pauses upstream calls until it resets.
 	limited := classifyUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"type":"FreeUsageLimitError"}}`))
-	if limited.Code != "rate_limited" {
-		t.Fatalf("429 mapped to %q, want rate_limited", limited.Code)
+	if limited.Code != "free_usage_limit" {
+		t.Fatalf("FreeUsageLimitError mapped to %q, want free_usage_limit", limited.Code)
+	}
+	if limited.HTTPStatus != http.StatusTooManyRequests {
+		t.Fatalf("drained allowance status = %d, want 429", limited.HTTPStatus)
+	}
+	// A plain 429 stays a burst limit.
+	burst := classifyUpstreamError(http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_error"}}`))
+	if burst.Code != "rate_limited" {
+		t.Fatalf("burst 429 mapped to %q, want rate_limited", burst.Code)
 	}
 }
 

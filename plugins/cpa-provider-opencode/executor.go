@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
@@ -378,21 +380,43 @@ func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPla
 // one, because the lanes fail for different reasons: the keyless lane is metered
 // per source address, and the account lane per workspace.
 func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*cpakit.HTTPResult, error) {
+	if until, blocked := p.limit.remaining(time.Now()); blocked {
+		return nil, freeUsageLimitError(until)
+	}
 	seed := conversationSeed(req)
 	var lastError error
+	var limitUntil time.Time
+	drained := len(plan.lanes) > 0
 	for _, lane := range plan.lanes {
 		headers := p.requestHeaders(plan, lane, seed)
 		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, headers, body)
 		if errDo != nil {
+			drained = false
 			lastError = cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
 			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errDo.Error()))
 			continue
 		}
 		if result.StatusCode >= 200 && result.StatusCode < 300 {
+			p.limit.clear()
 			return result, nil
 		}
-		lastError = classifyUpstreamError(result.StatusCode, result.Body)
+		if isFreeUsageLimit(result.StatusCode, result.Body) {
+			// The allowance is shared, but the next lane is still tried once: a
+			// lane with its own allowance would answer here, and only when every
+			// lane reports the drained state is it recorded.
+			if until := freeUsageLimitUntil(result.Header, time.Now()); until.After(limitUntil) {
+				limitUntil = until
+			}
+			lastError = freeUsageLimitError(limitUntil)
+		} else {
+			drained = false
+			lastError = classifyUpstreamError(result.StatusCode, result.Body)
+		}
 		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, result.StatusCode))
+	}
+	if drained && !limitUntil.IsZero() {
+		p.limit.record(limitUntil)
+		cpakit.HostLog(ctx, "warn", "opencode: free tier allowance drained until "+limitUntil.UTC().Format(time.RFC3339)+"; upstream calls are paused")
 	}
 	return nil, lastError
 }
@@ -400,29 +424,50 @@ func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, 
 // openChatStream opens the upstream as a live reader. A non-2xx head is fully
 // known before any body byte, so it is read and classified here.
 func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*cpakit.HTTPStream, error) {
+	if until, blocked := p.limit.remaining(time.Now()); blocked {
+		return nil, freeUsageLimitError(until)
+	}
 	seed := conversationSeed(req)
 	var lastError error
+	var limitUntil time.Time
+	drained := len(plan.lanes) > 0
 	for _, lane := range plan.lanes {
 		headers := p.requestHeaders(plan, lane, seed)
 		stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.endpoint, headers, body)
 		if errOpen != nil {
+			drained = false
 			lastError = cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
 			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errOpen.Error()))
 			continue
 		}
 		if stream.StatusCode >= 200 && stream.StatusCode < 300 {
+			p.limit.clear()
 			return stream, nil
 		}
 		raw, errRead := cpakit.ReadStreamBody(stream, 0)
 		status := stream.StatusCode
+		header := stream.Header
 		stream.Close()
 		if errRead != nil {
+			drained = false
 			lastError = cpakit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
 			cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s body read failed", lane.label))
 			continue
 		}
-		lastError = classifyUpstreamError(status, raw)
+		if isFreeUsageLimit(status, raw) {
+			if until := freeUsageLimitUntil(header, time.Now()); until.After(limitUntil) {
+				limitUntil = until
+			}
+			lastError = freeUsageLimitError(limitUntil)
+		} else {
+			drained = false
+			lastError = classifyUpstreamError(status, raw)
+		}
 		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, status))
+	}
+	if drained && !limitUntil.IsZero() {
+		p.limit.record(limitUntil)
+		cpakit.HostLog(ctx, "warn", "opencode: free tier allowance drained until "+limitUntil.UTC().Format(time.RFC3339)+"; upstream calls are paused")
 	}
 	return nil, lastError
 }
@@ -452,6 +497,45 @@ func (p *pluginState) requestHeaders(plan *executionPlan, lane executionLane, se
 	return headers
 }
 
+// freeUsageLimitError reports a drained free-tier allowance, with the reset
+// instant when it is known.
+//
+// The plugin cannot set response headers, so the reset travels in the message
+// instead of a Retry-After header. A caller that reads it knows when the tier
+// comes back rather than retrying blind.
+func freeUsageLimitError(until time.Time) *cpakit.PluginError {
+	message := "the OpenCode free tier allowance is used up for today"
+	if !until.IsZero() {
+		message += "; it resets at " + until.UTC().Format(time.RFC3339) +
+			" (" + until.Local().Format("2006-01-02 15:04 MST") + ")"
+	}
+	return cpakit.NewError("free_usage_limit", message, http.StatusTooManyRequests)
+}
+
+// freeUsageLimitUntil reports the reset instant of a drained allowance, which
+// the upstream states as Retry-After in seconds or as an HTTP date.
+func freeUsageLimitUntil(header http.Header, now time.Time) time.Time {
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return time.Time{}
+	}
+	if seconds, errSeconds := strconv.Atoi(raw); errSeconds == nil {
+		if seconds <= 0 {
+			return time.Time{}
+		}
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if when, errDate := http.ParseTime(raw); errDate == nil {
+		return when
+	}
+	return time.Time{}
+}
+
+// isFreeUsageLimit reports whether a response is a drained free-tier allowance.
+func isFreeUsageLimit(status int, body []byte) bool {
+	return status == http.StatusTooManyRequests && strings.Contains(string(body), "FreeUsageLimitError")
+}
+
 // classifyUpstreamError maps an upstream failure onto a client-visible error
 // with the right status.
 //
@@ -467,6 +551,10 @@ func classifyUpstreamError(status int, body []byte) *cpakit.PluginError {
 	case strings.Contains(text, "UpgradeRequired"):
 		return cpakit.NewError("client_version_too_old",
 			"OpenCode requires a newer CLI version for the free tier. "+cpakit.TruncateBody(body, 0), http.StatusForbidden)
+	case status == http.StatusTooManyRequests && strings.Contains(text, "FreeUsageLimitError"):
+		// A drained daily allowance, not a transient burst limit. It resets at
+		// midnight UTC, which the upstream states in Retry-After.
+		return freeUsageLimitError(time.Time{})
 	case status == http.StatusTooManyRequests:
 		return cpakit.NewError("rate_limited", "rate limited: "+cpakit.TruncateBody(body, 0), http.StatusTooManyRequests)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
