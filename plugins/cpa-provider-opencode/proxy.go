@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,28 +30,47 @@ import (
 // costs no tokens, so the check is free.
 
 const (
-	// proxyListHTTP and proxyListSOCKS are the default sources. They are plain
-	// files served by GitHub, so no key or account is needed.
-	proxyListHTTP  = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
-	proxyListSOCKS = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+	proxyListMonosansHTTP   = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+	proxyListMonosansSOCKS  = "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"
+	proxyListSpeedXHTTP     = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
+	proxyListSpeedXSOCKS    = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt"
+	proxyListAliilaproHTTP  = "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt"
+	proxyListAliilaproSOCKS = "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt"
 
-	// proxyCandidatesPerList bounds how many entries one refresh checks. The
-	// lists are sorted fastest first, so the head is the best of what worked at
-	// the last update. Checking thousands would take minutes for little gain.
-	proxyCandidatesPerList = 60
+	// proxyCandidatesPerList bounds how many entries of each list one refresh
+	// checks. The publishers sort by speed, so the head is the best of what
+	// worked at the last update, and checking thousands would take minutes for
+	// little gain.
+	proxyCandidatesPerList = 48
 	// proxyCheckConcurrency bounds the simultaneous checks.
 	proxyCheckConcurrency = 24
 	// proxyCheckTimeout is one check's budget. A slow proxy is not worth the
 	// latency it adds to a user request.
 	proxyCheckTimeout = 12 * time.Second
-	// proxyRefreshInterval is how long a checked pool is reused. The source lists
-	// are re-checked hourly.
-	proxyRefreshInterval = 30 * time.Minute
+	// proxyRefreshInterval is how long a checked pool is reused. The publishers
+	// re-check their lists hourly or more often.
+	proxyRefreshInterval = 20 * time.Minute
 	// proxyFailuresBeforeRetire is how many transport failures retire an entry.
 	proxyFailuresBeforeRetire = 2
 	// proxyModel is the model the health check asks for. One token is enough.
 	proxyModel = "mimo-v2.6-flash-free"
 )
+
+// defaultProxySources is the source set the pool loads when proxy_source is
+// empty. They are plain files served by GitHub, so no key and no account is
+// needed.
+//
+// Several lists are combined because the yield is low: measured against the live
+// tier, roughly one entry in ten carries the keyless request. SOCKS4 lists are
+// deliberately absent, because the transport speaks HTTP, HTTPS and SOCKS5.
+var defaultProxySources = []string{
+	proxyListMonosansHTTP,
+	proxyListMonosansSOCKS,
+	proxyListSpeedXHTTP,
+	proxyListSpeedXSOCKS,
+	proxyListAliilaproHTTP,
+	proxyListAliilaproSOCKS,
+}
 
 // proxyEntry is one candidate address with what is known about it.
 type proxyEntry struct {
@@ -274,7 +295,7 @@ func fetchProxyList(ctx context.Context, url string, limit int) []string {
 	out := make([]string, 0, limit)
 	for _, line := range strings.Split(string(result.Body), "\n") {
 		value := strings.TrimSpace(line)
-		if value == "" || strings.HasPrefix(value, "#") {
+		if value == "" || strings.HasPrefix(value, "#") || strings.HasPrefix(value, ";") {
 			continue
 		}
 		if !strings.Contains(value, "://") {
@@ -282,12 +303,39 @@ func fetchProxyList(ctx context.Context, url string, limit int) []string {
 			// HTTP CONNECT proxy is the right default.
 			value = "http://" + value
 		}
+		// Several publishers prepend a banner line and some ship a stray error
+		// page, so an entry is only taken when it parses as a proxy URL.
+		if !plausibleProxyURL(value) {
+			continue
+		}
 		out = append(out, value)
 		if len(out) >= limit {
 			break
 		}
 	}
 	return out
+}
+
+// plausibleProxyURL reports whether an entry is a usable proxy URL: a supported
+// scheme, a host, and a numeric port.
+func plausibleProxyURL(value string) bool {
+	parsed, errParse := url.Parse(value)
+	if errParse != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return false
+	}
+	if strings.TrimSpace(parsed.Hostname()) == "" {
+		return false
+	}
+	port, errPort := strconv.Atoi(parsed.Port())
+	if errPort != nil || port < 1 || port > 65535 {
+		return false
+	}
+	return true
 }
 
 // checkOneProxy sends the real keyless request through one proxy and reports

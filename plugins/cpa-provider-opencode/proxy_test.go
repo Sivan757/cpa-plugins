@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,5 +123,53 @@ func TestPoolIsOffUnlessAskedFor(t *testing.T) {
 	// proxied path was not taken: a proxy attempt would not need the host.
 	if outcome == nil {
 		t.Fatal("attemptLane returned nothing")
+	}
+}
+
+// TestPlausibleProxyURL keeps a publisher banner or a stray error page out of the
+// pool. Several lists prepend a line and some ship text that is not an entry.
+func TestPlausibleProxyURL(t *testing.T) {
+	good := []string{
+		"http://1.2.3.4:8080",
+		"socks5://1.2.3.4:1080",
+		"http://user:pass@1.2.3.4:3128",
+		"https://proxy.example.com:443",
+	}
+	for _, value := range good {
+		if !plausibleProxyURL(value) {
+			t.Fatalf("%q was rejected", value)
+		}
+	}
+	bad := []string{
+		"",
+		"http://",
+		"http://1.2.3.4",
+		"http://1.2.3.4:0",
+		"http://1.2.3.4:99999",
+		"http://1.2.3.4:notaport",
+		"ftp://1.2.3.4:21",
+		"http://error code:502",
+		"SOCKS5 Proxy list updated at 2026-10-16 16:00:03 GMT+7",
+	}
+	for _, value := range bad {
+		if plausibleProxyURL(value) {
+			t.Fatalf("%q was accepted", value)
+		}
+	}
+}
+
+// TestEveryDefaultSourceLooksLikeAListURL guards the source list against a typo,
+// which would otherwise only show up as a missing pool at runtime.
+func TestEveryDefaultSourceLooksLikeAListURL(t *testing.T) {
+	if len(defaultProxySources) < 4 {
+		t.Fatalf("%d default sources, want several: the yield per list is low", len(defaultProxySources))
+	}
+	for _, source := range defaultProxySources {
+		if !strings.HasPrefix(source, "https://raw.githubusercontent.com/") {
+			t.Fatalf("source %q is not a GitHub raw file", source)
+		}
+		if strings.Contains(source, "socks4") {
+			t.Fatalf("source %q is a SOCKS4 list, which the transport cannot use", source)
+		}
 	}
 }

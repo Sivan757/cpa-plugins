@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.16.0"
+var pluginVersion = "0.17.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -154,7 +154,7 @@ func (g *gateway) Configure(configYAML []byte) error {
 	if !impl.proxyEnabled {
 		sources = nil
 	} else if len(sources) == 0 {
-		sources = []string{proxyListHTTP, proxyListSOCKS}
+		sources = defaultProxySources
 	}
 	impl.proxies.sources = sources
 	impl.proxies.candidates = cfg.Int("proxy_candidates", proxyCandidatesPerList)
