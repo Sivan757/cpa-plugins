@@ -145,6 +145,10 @@ type pluginState struct {
 	// limit remembers a drained free-tier allowance so later requests stop
 	// reaching upstream before it resets.
 	limit quotaLimit
+
+	// unavailable remembers the models an explicit upstream refusal retired, so
+	// the roster drops them and picks them up again when they serve.
+	unavailable availability
 }
 
 // quotaLimit holds the instant a drained free-tier allowance resets.

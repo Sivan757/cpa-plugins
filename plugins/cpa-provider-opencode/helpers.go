@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sivan/cpa-plugins/internal/cpakit"
 )
@@ -101,6 +102,31 @@ func (p *pluginState) freeRoot() string {
 		return p.baseURL
 	}
 	return freeBaseURL
+}
+
+// advertised narrows a catalogue to what the roster may publish: the optional
+// expose allowlist, then the models an explicit refusal retired.
+//
+// The catalogue itself already decides what exists, so a model upstream added is
+// advertised and one upstream removed disappears. The retirement list covers the
+// models the catalogue still lists but the tier cannot serve.
+func (p *pluginState) advertised(models []cpakit.ModelInfo) []cpakit.ModelInfo {
+	return p.unavailable.filter(cpakit.ExposeOnly(models, p.expose), time.Now())
+}
+
+// noteModelOutcome records what an upstream answer says about a model. A refusal
+// retires it; a served answer returns it.
+func (p *pluginState) noteModelOutcome(model string, status int, body []byte) {
+	if p == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	if status >= 200 && status < 300 {
+		p.unavailable.verify(model, time.Now())
+		return
+	}
+	if reason := retireReasonOf(status, body); reason != "" {
+		p.unavailable.retire(model, reason, time.Now())
+	}
 }
 
 // responsesRoot resolves the endpoint for models served only by the Responses

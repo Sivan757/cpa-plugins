@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -50,7 +51,68 @@ func (p *pluginState) catalog(ctx context.Context, tier string) []cpakit.ModelIn
 	p.cacheMu.Lock()
 	p.cache[tier] = cachedCatalog{fetchedAt: time.Now(), models: fetched}
 	p.cacheMu.Unlock()
+
+	// A model the catalogue lists for the first time is probed once, so a model
+	// that cannot be served never reaches the roster. The probe is skipped while
+	// the allowance is drained, because every answer would be inconclusive.
+	if tier == tierFree {
+		p.verifyNewModels(ctx, fetched)
+	}
 	return fetched
+}
+
+// verifyNewModels probes the free models that have no verdict yet.
+//
+// The probe is a real request with the smallest possible answer, because the
+// tier only reveals whether a model is servable by serving it. A refusal retires
+// the model; an inconclusive answer leaves it for a later refresh.
+func (p *pluginState) verifyNewModels(ctx context.Context, models []cpakit.ModelInfo) {
+	now := time.Now()
+	if _, drained := p.limit.remaining(now); drained {
+		return
+	}
+	for _, id := range p.unavailable.unverified(models, now) {
+		probe := map[string]any{
+			"model":      id,
+			"stream":     true,
+			"max_tokens": 1,
+			"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+			"tools":      ensureRequiredTools(nil),
+		}
+		plan, errPlan := p.planFor(ctx, cpakit.ExecutorRequest{
+			AuthProvider:   providerKey,
+			AuthAttributes: map[string]string{"tier": tierFree},
+			Model:          id,
+		})
+		if errPlan != nil {
+			continue
+		}
+		if plan.protocol == protocolResponses {
+			converted, errConvert := chatToResponses(probe, id)
+			if errConvert != nil {
+				continue
+			}
+			probe = converted
+		}
+		body, errMarshal := json.Marshal(probe)
+		if errMarshal != nil {
+			continue
+		}
+		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, p.requestHeaders(plan, plan.lanes[0], "verify-"+id), body)
+		if errDo != nil {
+			cpakit.HostLog(ctx, "warn", "opencode: probe of "+id+" failed to reach upstream")
+			continue
+		}
+		if result.StatusCode >= 200 && result.StatusCode < 300 {
+			p.unavailable.verify(id, time.Now())
+			continue
+		}
+		if reason := retireReasonOf(result.StatusCode, result.Body); reason != "" {
+			p.unavailable.retire(id, reason, time.Now())
+			continue
+		}
+		cpakit.HostLog(ctx, "info", fmt.Sprintf("opencode: probe of %s was inconclusive (HTTP %d); it stays unverified", id, result.StatusCode))
+	}
 }
 
 // fetchCatalog reads one tier's model list from its gateway.

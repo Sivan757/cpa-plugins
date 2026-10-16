@@ -398,8 +398,10 @@ func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, 
 		}
 		if result.StatusCode >= 200 && result.StatusCode < 300 {
 			p.limit.clear()
+			p.noteModelOutcome(plan.model, result.StatusCode, result.Body)
 			return result, nil
 		}
+		p.noteModelOutcome(plan.model, result.StatusCode, result.Body)
 		if isFreeUsageLimit(result.StatusCode, result.Body) {
 			// The allowance is shared, but the next lane is still tried once: a
 			// lane with its own allowance would answer here, and only when every
@@ -442,6 +444,7 @@ func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorReq
 		}
 		if stream.StatusCode >= 200 && stream.StatusCode < 300 {
 			p.limit.clear()
+			p.noteModelOutcome(plan.model, stream.StatusCode, nil)
 			return stream, nil
 		}
 		raw, errRead := cpakit.ReadStreamBody(stream, 0)
@@ -454,6 +457,7 @@ func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorReq
 			cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s body read failed", lane.label))
 			continue
 		}
+		p.noteModelOutcome(plan.model, status, raw)
 		if isFreeUsageLimit(status, raw) {
 			if until := freeUsageLimitUntil(header, time.Now()); until.After(limitUntil) {
 				limitUntil = until
