@@ -35,9 +35,9 @@ func (g *gateway) Execute(ctx context.Context, req cpakit.ExecutorRequest) (cpak
 	var aggregated []byte
 	var errAggregate error
 	if plan.protocol == protocolResponses {
-		aggregated, errAggregate = responsesCompletionFromStream(result.Body, plan.model)
+		aggregated, errAggregate = responsesCompletionFromStream(result.body, plan.model)
 	} else {
-		aggregated, errAggregate = cpakit.AggregateStream(result.Body)
+		aggregated, errAggregate = cpakit.AggregateStream(result.body)
 	}
 	if errAggregate != nil {
 		return cpakit.ExecutorResponse{}, errAggregate
@@ -72,14 +72,18 @@ func (g *gateway) ExecuteStream(ctx context.Context, req cpakit.ExecutorRequest,
 		if errCall != nil {
 			return cpakit.ExecutorStreamResponse{}, errCall
 		}
-		return cpakit.BufferedStream(cpakit.StreamHeaders(), cpakit.SplitSSE(result.Body)), nil
+		return cpakit.BufferedStream(cpakit.StreamHeaders(), cpakit.SplitSSE(result.body)), nil
 	}
 
 	callback := cpakit.NewHostCallback(hostCallbackID)
-	stream, errOpen := g.impl.openChatStream(ctx, req, callback, plan, body)
+	outcome, errOpen := g.impl.openChatStream(ctx, req, callback, plan, body)
 	if errOpen != nil {
 		return cpakit.ExecutorStreamResponse{}, errOpen
 	}
+	if outcome.stream == nil {
+		return cpakit.ExecutorStreamResponse{}, cpakit.NewError("upstream_unavailable", "the upstream answered without a body", http.StatusBadGateway)
+	}
+	stream := outcome.stream
 
 	translator := newResponsesTranslator(plan.model)
 	go func() {
@@ -219,6 +223,9 @@ type executionLane struct {
 	orgID string
 	// anonymous marks the keyless lane, which omits x-opencode-request.
 	anonymous bool
+	// proxy is the proxy this attempt egresses through, empty for a direct
+	// connection. Only the keyless lane ever carries one.
+	proxy string
 }
 
 type executionPlan struct {
@@ -374,102 +381,73 @@ func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPla
 	return encoded, nil
 }
 
-// callChat posts a prepared body and returns the buffered response.
-//
-// Each lane is tried in order. A lane that answers non-2xx gives way to the next
-// one, because the lanes fail for different reasons: the keyless lane is metered
-// per source address, and the account lane per workspace.
-func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*cpakit.HTTPResult, error) {
+// callChat posts a prepared body and returns the buffered answer.
+func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*laneOutcome, error) {
 	if until, blocked := p.limit.remaining(time.Now()); blocked {
 		return nil, freeUsageLimitError(until)
 	}
+	// The buffered path never streams, so the callback is only there to satisfy
+	// the shared lane walker; it is not opened against.
+	return p.runLanes(ctx, req, plan, body, false, cpakit.HostCallback{})
+}
+
+// openChatStream opens the upstream as a live reader.
+func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*laneOutcome, error) {
+	if until, blocked := p.limit.remaining(time.Now()); blocked {
+		return nil, freeUsageLimitError(until)
+	}
+	return p.runLanes(ctx, req, plan, body, true, callback)
+}
+
+// runLanes walks the plan's lanes and returns the first usable answer.
+//
+// The lanes fail for different reasons, so each is tried in turn. The keyless
+// lane rotates through the proxy pool inside its attempt, so by the time it
+// reports a failure every address the pool offered has been tried.
+func (p *pluginState) runLanes(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte, streaming bool, callback cpakit.HostCallback) (*laneOutcome, error) {
 	seed := conversationSeed(req)
 	var lastError error
 	var limitUntil time.Time
 	drained := len(plan.lanes) > 0
+	// direct records that every failing attempt used the shared source address.
+	direct := true
 	for _, lane := range plan.lanes {
-		headers := p.requestHeaders(plan, lane, seed)
-		result, errDo := cpakit.HTTPDo(ctx, http.MethodPost, plan.endpoint, headers, body)
-		if errDo != nil {
+		outcome := p.attemptLane(ctx, plan, lane, seed, body, streaming, callback)
+		if outcome.err != nil {
 			drained = false
-			lastError = cpakit.NewError("upstream_unavailable", errDo.Error(), http.StatusBadGateway)
-			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errDo.Error()))
+			lastError = cpakit.NewError("upstream_unavailable", outcome.err.Error(), http.StatusBadGateway)
+			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(outcome.err.Error()))
 			continue
 		}
-		if result.StatusCode >= 200 && result.StatusCode < 300 {
+		if outcome.ok() {
 			p.limit.clear()
-			p.noteModelOutcome(plan.model, result.StatusCode, result.Body)
-			return result, nil
+			p.noteModelOutcome(plan.model, outcome.status, nil)
+			return outcome, nil
 		}
-		p.noteModelOutcome(plan.model, result.StatusCode, result.Body)
-		if isFreeUsageLimit(result.StatusCode, result.Body) {
+		// A proxied attempt says nothing about the shared source address, so it
+		// must not pause the unproxied path.
+		if outcome.proxy != "" {
+			direct = false
+		}
+		p.noteModelOutcome(plan.model, outcome.status, outcome.body)
+		if isFreeUsageLimit(outcome.status, outcome.body) {
 			// The allowance is shared, but the next lane is still tried once: a
 			// lane with its own allowance would answer here, and only when every
 			// lane reports the drained state is it recorded.
-			if until := freeUsageLimitUntil(result.Header, time.Now()); until.After(limitUntil) {
+			if until := freeUsageLimitUntil(outcome.header, time.Now()); until.After(limitUntil) {
 				limitUntil = until
 			}
 			lastError = freeUsageLimitError(limitUntil)
 		} else {
 			drained = false
-			lastError = classifyUpstreamError(result.StatusCode, result.Body)
+			lastError = classifyUpstreamError(outcome.status, outcome.body)
 		}
-		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, result.StatusCode))
+		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, outcome.status))
 	}
-	if drained && !limitUntil.IsZero() {
-		p.limit.record(limitUntil)
-		cpakit.HostLog(ctx, "warn", "opencode: free tier allowance drained until "+limitUntil.UTC().Format(time.RFC3339)+"; upstream calls are paused")
-	}
-	return nil, lastError
-}
-
-// openChatStream opens the upstream as a live reader. A non-2xx head is fully
-// known before any body byte, so it is read and classified here.
-func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*cpakit.HTTPStream, error) {
-	if until, blocked := p.limit.remaining(time.Now()); blocked {
-		return nil, freeUsageLimitError(until)
-	}
-	seed := conversationSeed(req)
-	var lastError error
-	var limitUntil time.Time
-	drained := len(plan.lanes) > 0
-	for _, lane := range plan.lanes {
-		headers := p.requestHeaders(plan, lane, seed)
-		stream, errOpen := callback.OpenHTTPStream(ctx, http.MethodPost, plan.endpoint, headers, body)
-		if errOpen != nil {
-			drained = false
-			lastError = cpakit.NewError("upstream_unavailable", errOpen.Error(), http.StatusBadGateway)
-			cpakit.HostLog(ctx, "warn", "opencode: lane "+lane.label+" transport failed: "+cpakit.Redact(errOpen.Error()))
-			continue
-		}
-		if stream.StatusCode >= 200 && stream.StatusCode < 300 {
-			p.limit.clear()
-			p.noteModelOutcome(plan.model, stream.StatusCode, nil)
-			return stream, nil
-		}
-		raw, errRead := cpakit.ReadStreamBody(stream, 0)
-		status := stream.StatusCode
-		header := stream.Header
-		stream.Close()
-		if errRead != nil {
-			drained = false
-			lastError = cpakit.NewError("upstream_unavailable", errRead.Error(), http.StatusBadGateway)
-			cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s body read failed", lane.label))
-			continue
-		}
-		p.noteModelOutcome(plan.model, status, raw)
-		if isFreeUsageLimit(status, raw) {
-			if until := freeUsageLimitUntil(header, time.Now()); until.After(limitUntil) {
-				limitUntil = until
-			}
-			lastError = freeUsageLimitError(limitUntil)
-		} else {
-			drained = false
-			lastError = classifyUpstreamError(status, raw)
-		}
-		cpakit.HostLog(ctx, "warn", fmt.Sprintf("opencode: lane %s answered HTTP %d", lane.label, status))
-	}
-	if drained && !limitUntil.IsZero() {
+	// Pausing later requests is only right when the shared address is what ran
+	// out. With a pool in use, a drained address is one to rotate past, not a
+	// reason to stop serving.
+	if drained && direct && !limitUntil.IsZero() {
 		p.limit.record(limitUntil)
 		cpakit.HostLog(ctx, "warn", "opencode: free tier allowance drained until "+limitUntil.UTC().Format(time.RFC3339)+"; upstream calls are paused")
 	}

@@ -92,6 +92,18 @@ func (c HostCallback) callbackID() string {
 	return HostCallbackID()
 }
 
+// StreamSource is a live upstream body read incrementally.
+//
+// A plugin that has to dial upstream itself, because it needs a proxy the host
+// bridge cannot carry, implements this so the same forwarding helpers work for
+// both kinds of connection.
+type StreamSource interface {
+	// Read returns the next body fragment. The boolean reports end of stream.
+	Read() ([]byte, bool, error)
+	// Close releases the connection. It is safe to call more than once.
+	Close()
+}
+
 // HTTPStream is a live upstream host stream whose body is read incrementally.
 type HTTPStream struct {
 	// StatusCode and Header describe the response head. They are valid as soon
@@ -196,7 +208,7 @@ func (c HostCallback) CloseStream(streamID, errMsg string) {
 
 // ForwardStream reads an upstream stream and emits each complete SSE event
 // downstream as it arrives, preserving the upstream's timing.
-func ForwardStream(callback HostCallback, downStreamID string, stream *HTTPStream) error {
+func ForwardStream(callback HostCallback, downStreamID string, stream StreamSource) error {
 	if stream == nil {
 		return fmt.Errorf("upstream stream is required")
 	}
@@ -238,7 +250,7 @@ func ForwardStream(callback HostCallback, downStreamID string, stream *HTTPStrea
 // translation discards the upstream events the downstream protocol has no
 // equivalent for. Returned payloads are emitted as given, so a transform must
 // produce the downstream shape itself.
-func ForwardStreamTransform(callback HostCallback, downStreamID string, stream *HTTPStream, transform func([]byte) [][]byte) error {
+func ForwardStreamTransform(callback HostCallback, downStreamID string, stream StreamSource, transform func([]byte) [][]byte) error {
 	if stream == nil {
 		return fmt.Errorf("upstream stream is required")
 	}
@@ -279,7 +291,7 @@ func ForwardStreamTransform(callback HostCallback, downStreamID string, stream *
 
 // ReadStreamBody drains a stream into memory, for the finite bodies that carry
 // an error or a non-streaming answer.
-func ReadStreamBody(stream *HTTPStream, limit int) ([]byte, error) {
+func ReadStreamBody(stream StreamSource, limit int) ([]byte, error) {
 	if limit <= 0 {
 		limit = 1 << 20
 	}

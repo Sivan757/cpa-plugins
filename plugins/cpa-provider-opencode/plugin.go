@@ -153,6 +153,14 @@ type pluginState struct {
 	// unavailable remembers the models an explicit upstream refusal retired, so
 	// the roster drops them and picks them up again when they serve.
 	unavailable availability
+
+	// proxies holds the checked proxy pool the keyless lane rotates through.
+	proxies proxyPool
+	// proxyCursor remembers where the last choice stopped, so load spreads.
+	proxyCursor int
+	// proxyEnabled turns the pool on. It is off unless configured, because every
+	// proxy in it is a third party that sees the request's destination.
+	proxyEnabled bool
 }
 
 // quotaLimit holds the instant a drained free-tier allowance resets.

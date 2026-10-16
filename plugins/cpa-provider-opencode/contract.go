@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.14.0"
+var pluginVersion = "0.15.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -92,6 +92,21 @@ func (g *gateway) Metadata() cpakit.Metadata {
 				Description: "Paid Go tier: only advertise models matching these patterns. Empty advertises no paid model.",
 			},
 			{
+				Name:        "proxy_enabled",
+				Type:        cpakit.FieldBoolean,
+				Description: "Route keyless free-tier requests through a proxy pool, so each proxy is a separate daily allowance. Off by default.",
+			},
+			{
+				Name:        "proxy_source",
+				Type:        cpakit.FieldArray,
+				Description: "Proxy list URLs to load. Defaults to the monosans HTTP and SOCKS5 lists when empty.",
+			},
+			{
+				Name:        "proxy_candidates",
+				Type:        cpakit.FieldInteger,
+				Description: "How many entries from each list to check per refresh. Default 60.",
+			},
+			{
 				Name:        "go_base_url",
 				Type:        cpakit.FieldString,
 				Description: "Paid-tier upstream root (default https://opencode.ai/inference/go/v1).",
@@ -131,6 +146,18 @@ func (g *gateway) Configure(configYAML []byte) error {
 	impl.freeEnabled = cfg.Bool("free_enabled", true)
 	impl.expose = cfg.Strings("expose")
 	impl.exposeGo = cfg.Strings("expose_go")
+
+	// The proxy pool is opt-in: a proxy sees which host the request targets and
+	// can answer in its place, so it is never used unless it is asked for.
+	impl.proxyEnabled = cfg.Bool("proxy_enabled", false)
+	sources := cfg.Strings("proxy_source")
+	if !impl.proxyEnabled {
+		sources = nil
+	} else if len(sources) == 0 {
+		sources = []string{proxyListHTTP, proxyListSOCKS}
+	}
+	impl.proxies.sources = sources
+	impl.proxies.candidates = cfg.Int("proxy_candidates", proxyCandidatesPerList)
 	impl.credentialDir = strings.TrimSpace(cfg.String("credential_dir", ""))
 	impl.baseURL = strings.TrimSuffix(cfg.String("base_url", ""), "/")
 	impl.goURL = strings.TrimSuffix(cfg.String("go_base_url", ""), "/")
@@ -168,10 +195,12 @@ func (g *gateway) Configure(configYAML []byte) error {
 		!persisted,
 	)
 
+	proxyTotal, proxyUsable := g.impl.proxyCount()
 	cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
-		"opencode: configured expose=%v freeEnabled=%t goKeys=%d account=%t refresh=%t org=%q dir=%q",
+		"opencode: configured expose=%v freeEnabled=%t goKeys=%d account=%t refresh=%t org=%q dir=%q proxyEnabled=%t proxies=%d/%d",
 		g.impl.expose, g.impl.freeEnabled, len(g.impl.apiKeys),
-		g.impl.account.configured(), g.impl.account.hasRefresh(), g.impl.account.org(), g.impl.credentialDir))
+		g.impl.account.configured(), g.impl.account.hasRefresh(), g.impl.account.org(), g.impl.credentialDir,
+		g.impl.proxyEnabled, proxyUsable, proxyTotal))
 	g.impl.materializeTiers()
 	return nil
 }

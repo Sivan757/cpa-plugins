@@ -85,8 +85,8 @@ func TestFreeTierFallsBackToTheAccountLane(t *testing.T) {
 	if errCall != nil {
 		t.Fatalf("callChat: %v", errCall)
 	}
-	if result.StatusCode != 200 {
-		t.Fatalf("status = %d, want the account lane to answer 200", result.StatusCode)
+	if result.status != 200 {
+		t.Fatalf("status = %d, want the account lane to answer 200", result.status)
 	}
 
 	if len(*attempts) != 2 {

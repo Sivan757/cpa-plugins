@@ -135,8 +135,8 @@ func TestDrainedAllowanceStillTriesTheSecondLane(t *testing.T) {
 	if errCall != nil {
 		t.Fatalf("callChat: %v", errCall)
 	}
-	if result.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want the account lane to answer", result.StatusCode)
+	if result.status != http.StatusOK {
+		t.Fatalf("status = %d, want the account lane to answer", result.status)
 	}
 	if got := len(*attempts); got != 2 {
 		t.Fatalf("%d attempts, want one per lane", got)
