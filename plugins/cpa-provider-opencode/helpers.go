@@ -110,7 +110,15 @@ func (p *pluginState) freeRoot() string {
 // The catalogue itself already decides what exists, so a model upstream added is
 // advertised and one upstream removed disappears. The retirement list covers the
 // models the catalogue still lists but the tier cannot serve.
-func (p *pluginState) advertised(models []cpakit.ModelInfo) []cpakit.ModelInfo {
+func (p *pluginState) advertised(models []cpakit.ModelInfo, tier string) []cpakit.ModelInfo {
+	if tier == tierGo {
+		// A paid model is published only when it is named, so an unset key hides
+		// the whole paid catalogue rather than publishing all of it.
+		if len(p.exposeGo) == 0 {
+			return nil
+		}
+		return p.unavailable.filter(cpakit.ExposeOnly(models, p.exposeGo), time.Now())
+	}
 	return p.unavailable.filter(cpakit.ExposeOnly(models, p.expose), time.Now())
 }
 

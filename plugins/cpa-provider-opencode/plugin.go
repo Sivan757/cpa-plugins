@@ -121,9 +121,13 @@ type pluginState struct {
 	// versionResolved records that the published CLI version was discovered, so
 	// the lookup runs once rather than on every reconfigure.
 	versionResolved bool
-	// expose narrows the advertised roster to matching ids. Empty means no
-	// restriction.
+	// expose narrows the free tier's advertised roster to matching ids. Empty
+	// means no restriction, which is the default: the catalogue decides.
 	expose []string
+	// exposeGo narrows the paid Go tier's roster. Empty means the paid tier
+	// advertises nothing, because the free tier is what this provider exists for
+	// and a paid model is published only when it is named.
+	exposeGo []string
 
 	// materialized guards the one-shot auth-record creation.
 	materialized bool

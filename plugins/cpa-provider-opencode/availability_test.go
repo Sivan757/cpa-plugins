@@ -46,7 +46,7 @@ func TestRetiredModelLeavesAndReturns(t *testing.T) {
 	now := time.Now()
 	state.unavailable.retire("broken-free", "upstream serves this model on another protocol", now)
 
-	advertised := state.advertised(models)
+	advertised := state.advertised(models, tierFree)
 	if len(advertised) != 1 || advertised[0].ID != "good-free" {
 		t.Fatalf("advertised = %v, want only the served model", advertised)
 	}
@@ -66,7 +66,7 @@ func TestRefusedModelIsRetiredByRealTraffic(t *testing.T) {
 	state.noteModelOutcome("mystery-free", http.StatusBadRequest, []byte(`{"error":{"type":"ModelProtocolUnsupported"}}`))
 
 	models := []cpakit.ModelInfo{{ID: "mystery-free"}}
-	if got := state.advertised(models); len(got) != 0 {
+	if got := state.advertised(models, tierFree); len(got) != 0 {
 		t.Fatalf("a refused model is still advertised: %v", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestInconclusiveAnswerKeepsTheModel(t *testing.T) {
 	state.noteModelOutcome("busy-free", http.StatusTooManyRequests, []byte(`{"error":{"type":"FreeUsageLimitError"}}`))
 
 	models := []cpakit.ModelInfo{{ID: "busy-free"}}
-	if got := state.advertised(models); len(got) != 1 {
+	if got := state.advertised(models, tierFree); len(got) != 1 {
 		t.Fatalf("a rate-limited model was dropped from the roster: %v", got)
 	}
 }
@@ -123,8 +123,37 @@ func TestExposeStillNarrows(t *testing.T) {
 	state := newPluginState()
 	state.expose = []string{"wanted-free"}
 	models := []cpakit.ModelInfo{{ID: "wanted-free"}, {ID: "other-free"}}
-	got := state.advertised(models)
+	got := state.advertised(models, tierFree)
 	if len(got) != 1 || got[0].ID != "wanted-free" {
 		t.Fatalf("advertised = %v, want the expose list honoured", got)
+	}
+}
+
+// TestPaidTierIsOptIn proves the paid catalogue is published only when named.
+// The free tier is what this provider exists for, and the paid models were
+// previously hidden by hand through the expose list.
+func TestPaidTierIsOptIn(t *testing.T) {
+	state := newPluginState()
+	paid := []cpakit.ModelInfo{{ID: "kimi-k3"}, {ID: "deepseek-v4.1-flash"}}
+
+	if got := state.advertised(paid, tierGo); len(got) != 0 {
+		t.Fatalf("the paid tier published %v with no expose_go configured", got)
+	}
+
+	state.exposeGo = []string{"kimi-k3"}
+	got := state.advertised(paid, tierGo)
+	if len(got) != 1 || got[0].ID != "kimi-k3" {
+		t.Fatalf("advertised = %v, want only the named paid model", got)
+	}
+}
+
+// TestFreeTierIsAutomatic proves the free roster needs no configuration: an
+// unset expose publishes the whole free catalogue, which is how a model upstream
+// added appears on its own.
+func TestFreeTierIsAutomatic(t *testing.T) {
+	state := newPluginState()
+	free := []cpakit.ModelInfo{{ID: "glm-5.3-flash-free"}, {ID: "ll-alpha-free"}}
+	if got := state.advertised(free, tierFree); len(got) != 2 {
+		t.Fatalf("the free tier published %d models, want the whole catalogue", len(got))
 	}
 }

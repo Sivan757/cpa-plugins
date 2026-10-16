@@ -11,7 +11,7 @@ import (
 )
 
 // pluginVersion is overridden at build time with -X main.pluginVersion=...
-var pluginVersion = "0.13.0"
+var pluginVersion = "0.14.0"
 
 // providerKey is the single provider key this plugin serves. Both credential
 // tiers sit behind it, so overlapping model identifiers never compete across
@@ -84,7 +84,12 @@ func (g *gateway) Metadata() cpakit.Metadata {
 			{
 				Name:        "expose",
 				Type:        cpakit.FieldArray,
-				Description: "Only advertise models matching these patterns (e.g. '*-free'). Empty advertises everything.",
+				Description: "Free tier: only advertise models matching these patterns. Empty advertises the whole free catalogue.",
+			},
+			{
+				Name:        "expose_go",
+				Type:        cpakit.FieldArray,
+				Description: "Paid Go tier: only advertise models matching these patterns. Empty advertises no paid model.",
 			},
 			{
 				Name:        "go_base_url",
@@ -125,6 +130,7 @@ func (g *gateway) Configure(configYAML []byte) error {
 	impl.apiKeys = splitKeys(cfg.String("api_key", ""))
 	impl.freeEnabled = cfg.Bool("free_enabled", true)
 	impl.expose = cfg.Strings("expose")
+	impl.exposeGo = cfg.Strings("expose_go")
 	impl.credentialDir = strings.TrimSpace(cfg.String("credential_dir", ""))
 	impl.baseURL = strings.TrimSuffix(cfg.String("base_url", ""), "/")
 	impl.goURL = strings.TrimSuffix(cfg.String("go_base_url", ""), "/")
@@ -326,7 +332,7 @@ func (g *gateway) RefreshAuth(_ context.Context, req cpakit.AuthRefreshRequest) 
 
 // StaticModels publishes the free catalogue, which needs no auth record.
 func (g *gateway) StaticModels(ctx context.Context, req cpakit.StaticModelRequest) (cpakit.ModelResponse, error) {
-	models := g.impl.advertised(g.impl.freeModels(ctx))
+	models := g.impl.advertised(g.impl.freeModels(ctx), tierFree)
 	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
 	models = cpakit.FilterModelsByExclusion(models, excluded)
 	return cpakit.ModelResponse{Provider: providerKey, Models: models}, nil
@@ -335,7 +341,7 @@ func (g *gateway) StaticModels(ctx context.Context, req cpakit.StaticModelReques
 // ModelsForAuth publishes the catalogue the credential's tier may serve.
 func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest) (cpakit.ModelResponse, error) {
 	tier := tierOf(req.Attributes, req.StorageJSON)
-	models := g.impl.advertised(g.impl.modelsForTier(ctx, tier))
+	models := g.impl.advertised(g.impl.modelsForTier(ctx, tier), tier)
 	excluded := cpakit.ExcludedModelsFor(req.Host, providerKey)
 	models = cpakit.FilterModelsByExclusion(models, excluded)
 	return cpakit.ModelResponse{Provider: providerKey, Models: models}, nil
@@ -345,7 +351,7 @@ func (g *gateway) ModelsForAuth(ctx context.Context, req cpakit.AuthModelRequest
 func (g *gateway) RegisterModels(ctx context.Context, _ cpakit.ModelRegistrationRequest) (cpakit.ModelRegistrationResponse, error) {
 	return cpakit.ModelRegistrationResponse{
 		Provider: providerKey,
-		Models:   g.impl.advertised(g.impl.freeModels(ctx)),
+		Models:   g.impl.advertised(g.impl.freeModels(ctx), tierFree),
 	}, nil
 }
 
