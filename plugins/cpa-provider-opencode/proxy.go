@@ -205,7 +205,15 @@ func (p *pluginState) ensureProxyPool(ctx context.Context) {
 		pool.checkedAt = now
 		pool.checking = false
 		pool.mu.Unlock()
-		cpakit.HostLog(context.Background(), "info", fmt.Sprintf("opencode: proxy pool checked, %d usable", len(entries)))
+		ready := 0
+		checked := time.Now()
+		for _, entry := range entries {
+			if entry.usable(checked) {
+				ready++
+			}
+		}
+		cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
+			"opencode: proxy pool checked, %d carried the request, %d with a free allowance", len(entries), ready))
 	}()
 }
 

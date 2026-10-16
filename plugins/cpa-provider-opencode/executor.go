@@ -383,8 +383,10 @@ func (p *pluginState) prepareBody(req cpakit.ExecutorRequest, plan *executionPla
 
 // callChat posts a prepared body and returns the buffered answer.
 func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, plan *executionPlan, body []byte) (*laneOutcome, error) {
-	if until, blocked := p.limit.remaining(time.Now()); blocked {
-		return nil, freeUsageLimitError(until)
+	if p.pauseApplies() {
+		if until, blocked := p.limit.remaining(time.Now()); blocked {
+			return nil, freeUsageLimitError(until)
+		}
 	}
 	// The buffered path never streams, so the callback is only there to satisfy
 	// the shared lane walker; it is not opened against.
@@ -393,10 +395,23 @@ func (p *pluginState) callChat(ctx context.Context, req cpakit.ExecutorRequest, 
 
 // openChatStream opens the upstream as a live reader.
 func (p *pluginState) openChatStream(ctx context.Context, req cpakit.ExecutorRequest, callback cpakit.HostCallback, plan *executionPlan, body []byte) (*laneOutcome, error) {
-	if until, blocked := p.limit.remaining(time.Now()); blocked {
-		return nil, freeUsageLimitError(until)
+	if p.pauseApplies() {
+		if until, blocked := p.limit.remaining(time.Now()); blocked {
+			return nil, freeUsageLimitError(until)
+		}
 	}
 	return p.runLanes(ctx, req, plan, body, true, callback)
+}
+
+// pauseApplies reports whether one drained address should stop every later
+// request.
+//
+// It must not while a proxy pool is enabled: the pool exists to rotate past a
+// spent address, so pausing the whole provider would defeat it. Without a pool
+// the source address is fixed, and pausing avoids repeating a call that cannot
+// succeed.
+func (p *pluginState) pauseApplies() bool {
+	return p != nil && !p.proxyEnabled
 }
 
 // runLanes walks the plan's lanes and returns the first usable answer.
@@ -447,7 +462,7 @@ func (p *pluginState) runLanes(ctx context.Context, req cpakit.ExecutorRequest, 
 	// Pausing later requests is only right when the shared address is what ran
 	// out. With a pool in use, a drained address is one to rotate past, not a
 	// reason to stop serving.
-	if drained && direct && !limitUntil.IsZero() {
+	if drained && direct && !limitUntil.IsZero() && p.pauseApplies() {
 		p.limit.record(limitUntil)
 		cpakit.HostLog(ctx, "warn", "opencode: free tier allowance drained until "+limitUntil.UTC().Format(time.RFC3339)+"; upstream calls are paused")
 	}
