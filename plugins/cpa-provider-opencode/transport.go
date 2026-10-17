@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -42,16 +43,28 @@ func proxyHTTPClient(proxyURL string) (*http.Client, error) {
 		return nil, fmt.Errorf("proxy URL %q has no host", proxyURL)
 	}
 	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(parsed),
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		Proxy:               http.ProxyURL(parsed),
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     60 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout:   proxyDialTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		// A proxy that stalls before the response head is abandoned. The body is
+		// left unbounded for the streaming path, which a long generation needs;
+		// the buffered path bounds itself separately.
+		ResponseHeaderTimeout: proxyHeadTimeout,
 	}
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute}
+	client := &http.Client{Transport: transport}
 	upstreamClients.clients[proxyURL] = client
 	return client, nil
+}
+
+// bufferedTimeoutContext bounds one whole buffered answer.
+func bufferedTimeoutContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, proxyBufferedTimeout)
 }
 
 // sendThrough performs one request on the given client.
@@ -126,6 +139,8 @@ func openThrough(ctx context.Context, client *http.Client, endpoint string, head
 
 // drainThrough reads a whole body from the client's transport.
 func drainThrough(ctx context.Context, client *http.Client, endpoint string, headers http.Header, body []byte) (int, http.Header, []byte, error) {
+	ctx, cancel := bufferedTimeoutContext(ctx)
+	defer cancel()
 	response, errDo := sendThrough(ctx, client, endpoint, headers, body)
 	if errDo != nil {
 		return 0, nil, nil, errDo

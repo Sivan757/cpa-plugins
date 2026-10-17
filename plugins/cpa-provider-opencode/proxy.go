@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,21 @@ const (
 	// proxyRefreshInterval is how long a checked pool is reused. The publishers
 	// re-check their lists hourly or more often.
 	proxyRefreshInterval = 20 * time.Minute
+	// proxyHeadTimeout bounds the wait for a response head. A proxy that has not
+	// answered by then is abandoned for the next one, because the edge in front
+	// of this service gives up at 60 seconds and a stalled proxy would otherwise
+	// spend that budget before failing.
+	proxyHeadTimeout = 20 * time.Second
+	// proxyDialTimeout bounds establishing the connection to the proxy.
+	proxyDialTimeout = 8 * time.Second
+	// proxyMaxLatency is the slowest head a proxy may take and stay in the pool.
+	// Past this the proxy adds more delay than the allowance is worth, and the
+	// edge may cut the request off before the answer arrives.
+	proxyMaxLatency = 6 * time.Second
+	// proxyBufferedTimeout bounds a whole buffered answer. The streaming path is
+	// not bounded here, because a model may generate for a long time; the head
+	// timeout still applies to it.
+	proxyBufferedTimeout = 3 * time.Minute
 	// proxyFailuresBeforeRetire is how many transport failures retire an entry.
 	proxyFailuresBeforeRetire = 2
 	// proxyModel is the model the health check asks for. One token is enough.
@@ -80,7 +96,10 @@ type proxyEntry struct {
 	exitIP string
 	// drainedUntil is when this entry's allowance is expected back.
 	drainedUntil time.Time
-	// failures counts transport failures since the last success.
+	// latency is the last observed wait for a response head. The pool is ordered
+	// by it, so the fastest proxies are used first.
+	latency time.Duration
+	// failures counts transport failures and stalls since the last success.
 	failures int
 	// retiredAt is set when the entry failed enough times to stop using it.
 	retiredAt time.Time
@@ -135,7 +154,7 @@ func (p *pluginState) proxyFor() string {
 }
 
 // noteProxy records what an answer says about the proxy that carried it.
-func (p *pluginState) noteProxy(proxyURL string, status int, body []byte, transportFailed bool) {
+func (p *pluginState) noteProxy(proxyURL string, status int, body []byte, transportFailed bool, latency time.Duration) {
 	if p == nil || proxyURL == "" {
 		return
 	}
@@ -161,8 +180,20 @@ func (p *pluginState) noteProxy(proxyURL string, status int, body []byte, transp
 			entry.retiredAt = now
 			cpakit.HostLog(nil, "warn", "opencode: proxy "+redactProxy(proxyURL)+" retired from the pool")
 		}
+	case latency > proxyMaxLatency:
+		// A stall is retirement-worthy for the same reason a broken proxy is: the
+		// caller waits, and the edge may cut the request off before it completes.
+		entry.latency = latency
+		entry.failures++
+		cpakit.HostLog(nil, "warn", fmt.Sprintf("opencode: proxy %s answered in %s, over the %s limit (%d)",
+			redactProxy(proxyURL), latency.Round(time.Millisecond), proxyMaxLatency, entry.failures))
+		if entry.failures >= proxyFailuresBeforeRetire {
+			entry.retiredAt = now
+			cpakit.HostLog(nil, "warn", "opencode: proxy "+redactProxy(proxyURL)+" retired from the pool")
+		}
 	case status >= 200 && status < 300:
 		entry.failures = 0
+		entry.latency = latency
 		entry.drainedUntil = time.Time{}
 	case isFreeUsageLimit(status, body):
 		// Alive but spent, which still proves the proxy carries the request. The
@@ -228,13 +259,18 @@ func (p *pluginState) ensureProxyPool(ctx context.Context) {
 		pool.mu.Unlock()
 		ready := 0
 		checked := time.Now()
-		for _, entry := range entries {
+		fastest := time.Duration(0)
+		for index, entry := range entries {
 			if entry.usable(checked) {
 				ready++
 			}
+			if index == 0 {
+				fastest = entry.latency
+			}
 		}
 		cpakit.HostLog(context.Background(), "info", fmt.Sprintf(
-			"opencode: proxy pool checked, %d carried the request, %d with a free allowance", len(entries), ready))
+			"opencode: proxy pool checked, %d carried the request, %d with a free allowance, fastest %s, limit %s",
+			len(entries), ready, fastest.Round(time.Millisecond), proxyMaxLatency))
 	}()
 }
 
@@ -279,7 +315,16 @@ func checkProxyLists(ctx context.Context, sources []string, candidates int) []*p
 			kept = append(kept, entry)
 		}
 	}
-	return kept
+	return orderByLatency(kept)
+}
+
+// orderByLatency puts the fastest entries first, so the round robin spends most
+// of its turns on the proxies least likely to reach the edge's timeout.
+func orderByLatency(entries []*proxyEntry) []*proxyEntry {
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].latency < entries[j].latency
+	})
+	return entries
 }
 
 // fetchProxyList reads one list and returns its first candidates entries.
@@ -362,6 +407,7 @@ func checkOneProxy(ctx context.Context, proxyURL string) *proxyEntry {
 	}
 	headers.Set("Authorization", "Bearer "+publicCredential)
 
+	started := time.Now()
 	response, errDo := sendThrough(checkCtx, client, freeBaseURL+"/chat/completions", headers, body)
 	if errDo != nil {
 		return nil
@@ -371,7 +417,12 @@ func checkOneProxy(ctx context.Context, proxyURL string) *proxyEntry {
 	count, _ := response.Body.Read(raw)
 	preview := string(raw[:count])
 
-	entry := &proxyEntry{url: proxyURL}
+	entry := &proxyEntry{url: proxyURL, latency: time.Since(started)}
+	// A proxy slower than the limit is dropped here rather than at request time,
+	// so a slow entry never enters the pool.
+	if entry.latency > proxyMaxLatency {
+		return nil
+	}
 	switch {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
 		return entry

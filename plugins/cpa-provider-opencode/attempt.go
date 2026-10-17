@@ -93,17 +93,22 @@ func (p *pluginState) attemptKeyless(ctx context.Context, plan *executionPlan, l
 			continue
 		}
 		headers := p.requestHeaders(plan, lane, seed)
+		// The wait for a response head is what a slow proxy costs the caller, so
+		// it is measured for every attempt and reported to the pool.
+		started := time.Now()
 		if streaming {
 			stream, raw, errOpen := openThrough(ctx, client, plan.endpoint, headers, body)
+			headLatency := time.Since(started)
 			if errOpen != nil {
-				p.noteProxy(proxyURL, 0, nil, true)
+				p.noteProxy(proxyURL, 0, nil, true, headLatency)
 				last = &laneOutcome{err: errOpen, proxy: proxyURL}
 				continue
 			}
 			if stream.StatusCode >= 200 && stream.StatusCode < 300 {
+				p.noteProxy(proxyURL, stream.StatusCode, nil, false, headLatency)
 				return &laneOutcome{status: stream.StatusCode, header: stream.Header, stream: stream, proxy: proxyURL}
 			}
-			p.noteProxy(proxyURL, stream.StatusCode, raw, false)
+			p.noteProxy(proxyURL, stream.StatusCode, raw, false, headLatency)
 			if isFreeUsageLimit(stream.StatusCode, raw) {
 				p.markProxyDrained(proxyURL, freeUsageLimitUntil(stream.Header, time.Now()))
 			}
@@ -111,15 +116,17 @@ func (p *pluginState) attemptKeyless(ctx context.Context, plan *executionPlan, l
 			continue
 		}
 		status, header, raw, errDo := drainThrough(ctx, client, plan.endpoint, headers, body)
+		headLatency := time.Since(started)
 		if errDo != nil {
-			p.noteProxy(proxyURL, 0, nil, true)
+			p.noteProxy(proxyURL, 0, nil, true, headLatency)
 			last = &laneOutcome{err: errDo, proxy: proxyURL}
 			continue
 		}
 		if status >= 200 && status < 300 {
+			p.noteProxy(proxyURL, status, nil, false, headLatency)
 			return &laneOutcome{status: status, header: header, body: raw, proxy: proxyURL}
 		}
-		p.noteProxy(proxyURL, status, raw, false)
+		p.noteProxy(proxyURL, status, raw, false, headLatency)
 		if isFreeUsageLimit(status, raw) {
 			p.markProxyDrained(proxyURL, freeUsageLimitUntil(header, time.Now()))
 		}

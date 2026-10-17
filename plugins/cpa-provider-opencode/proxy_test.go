@@ -70,7 +70,7 @@ func TestProxyReturnsAfterItsReset(t *testing.T) {
 func TestProxyIsRetiredAfterRepeatedFailures(t *testing.T) {
 	state := poolWith("http://dead:1")
 	for i := 0; i < proxyFailuresBeforeRetire; i++ {
-		state.noteProxy("http://dead:1", 0, nil, true)
+		state.noteProxy("http://dead:1", 0, nil, true, 0)
 	}
 	if got := state.proxyFor(); got != "" {
 		t.Fatalf("proxyFor = %q, want a retired entry to be skipped", got)
@@ -81,8 +81,8 @@ func TestProxyIsRetiredAfterRepeatedFailures(t *testing.T) {
 // failed, so a transient blip does not retire a working proxy.
 func TestSuccessClearsFailures(t *testing.T) {
 	state := poolWith("http://flaky:1")
-	state.noteProxy("http://flaky:1", 0, nil, true)
-	state.noteProxy("http://flaky:1", http.StatusOK, nil, false)
+	state.noteProxy("http://flaky:1", 0, nil, true, 0)
+	state.noteProxy("http://flaky:1", http.StatusOK, nil, false, time.Millisecond)
 	if got := state.proxyFor(); got != "http://flaky:1" {
 		t.Fatalf("proxyFor = %q, want the entry still in use", got)
 	}
@@ -170,6 +170,56 @@ func TestEveryDefaultSourceLooksLikeAListURL(t *testing.T) {
 		}
 		if strings.Contains(source, "socks4") {
 			t.Fatalf("source %q is a SOCKS4 list, which the transport cannot use", source)
+		}
+	}
+}
+
+// TestSlowProxyIsRetired proves a proxy that answers slower than the limit stops
+// being used. The edge in front of this service gives up at 60 seconds, so a
+// stalled proxy spends the caller's whole budget before failing.
+func TestSlowProxyIsRetired(t *testing.T) {
+	state := poolWith("http://slow:1")
+	for i := 0; i < proxyFailuresBeforeRetire; i++ {
+		state.noteProxy("http://slow:1", http.StatusOK, nil, false, proxyMaxLatency+time.Second)
+	}
+	if got := state.proxyFor(); got != "" {
+		t.Fatalf("proxyFor = %q, want a slow entry to be retired", got)
+	}
+}
+
+// TestFastProxyStays proves an answer inside the limit keeps the entry, and that
+// its measured latency is stored.
+func TestFastProxyStays(t *testing.T) {
+	state := poolWith("http://fast:1")
+	state.noteProxy("http://fast:1", http.StatusOK, nil, false, 500*time.Millisecond)
+	if got := state.proxyFor(); got != "http://fast:1" {
+		t.Fatalf("proxyFor = %q, want the fast entry kept", got)
+	}
+	state.proxies.mu.Lock()
+	latency := state.proxies.entries[0].latency
+	failures := state.proxies.entries[0].failures
+	state.proxies.mu.Unlock()
+	if latency != 500*time.Millisecond {
+		t.Fatalf("latency = %s, want the measured value", latency)
+	}
+	if failures != 0 {
+		t.Fatalf("failures = %d, want 0", failures)
+	}
+}
+
+// TestPoolIsOrderedByLatency proves the round robin starts with the fastest
+// entries, which is what keeps most requests clear of the edge timeout.
+func TestPoolIsOrderedByLatency(t *testing.T) {
+	entries := []*proxyEntry{
+		{url: "http://slow:1", latency: 5 * time.Second},
+		{url: "http://fast:1", latency: 200 * time.Millisecond},
+		{url: "http://mid:1", latency: 2 * time.Second},
+	}
+	ordered := orderByLatency(entries)
+	want := []string{"http://fast:1", "http://mid:1", "http://slow:1"}
+	for i, url := range want {
+		if ordered[i].url != url {
+			t.Fatalf("position %d = %s, want %s", i, ordered[i].url, url)
 		}
 	}
 }
